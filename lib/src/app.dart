@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import 'data/in_memory_task_repository.dart';
@@ -14,10 +16,16 @@ import 'theme/app_theme.dart';
 import 'widgets/common.dart';
 
 class DdlSurvivalApp extends StatefulWidget {
-  const DdlSurvivalApp({super.key, this.repository, this.installationStore});
+  const DdlSurvivalApp({
+    super.key,
+    this.repository,
+    this.installationStore,
+    this.onDispose,
+  });
 
   final TaskRepository? repository;
   final InstallationStore? installationStore;
+  final Future<void> Function()? onDispose;
 
   @override
   State<DdlSurvivalApp> createState() => _DdlSurvivalAppState();
@@ -39,6 +47,8 @@ class _DdlSurvivalAppState extends State<DdlSurvivalApp> {
   @override
   void dispose() {
     _controller.dispose();
+    final disposeCallback = widget.onDispose;
+    if (disposeCallback != null) unawaited(disposeCallback());
     super.dispose();
   }
 

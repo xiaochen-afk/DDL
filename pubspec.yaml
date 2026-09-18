@@ -9,11 +9,26 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  path: ^1.9.1
   shared_preferences: ^2.5.3
+  sqflite: ^2.4.2
+  uuid: ^4.5.1
 
 dev_dependencies:
+  flutter_launcher_icons: ^0.14.4
   flutter_test:
     sdk: flutter
+  sqflite_common_ffi: ^2.3.6
+
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: assets/branding/app_icon.png
+  adaptive_icon_background: "#F46A3B"
+  adaptive_icon_foreground: assets/branding/app_icon.png
+  adaptive_icon_foreground_inset: 16
+  remove_alpha_ios: true
+  background_color_ios: "#F46A3B"
 
 flutter:
   uses-material-design: true

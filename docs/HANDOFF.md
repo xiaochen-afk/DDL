@@ -1,7 +1,7 @@
 # DDL 生存指南项目交接文档
 
-> 交接文档版本：1.8  
-> 当前阶段：首次启动空状态与生存天数持久化完成，等待 SQLite 和系统通知 Adapter 接入  
+> 交接文档版本：1.10
+> 当前阶段：SQLite 任务数据层已通过 vivo Android 15 真机验证，等待评审后接入系统通知 Adapter
 > 最后更新：2026-09-18
 
 ## 1. 项目一句话说明
@@ -26,16 +26,20 @@
 - 补充状态单元测试和核心 Widget 交互测试。
 - 默认任务数据改为空，不再向真实用户展示演示任务。
 - 使用 `shared_preferences` 持久化首次启动日期，生存天数从第 1 天按自然日累计。
+- 完成 SQLite v1 Schema、连接生命周期、任务 Repository、事务事件、乐观锁和稳定错误映射。
+- Android/iOS 生产入口已切换为 SQLite；Web 开发预览保留内存 Repository。
+- SQLite 版本已在 vivo V2362A Android 15 真机完成安装、创建、强制结束、重启读取和测试数据清理验证。
+- 完成品牌图标抠图，并生成 Android 各密度/自适应图标与 iOS AppIcon 全尺寸资源。
 
 尚未开始：
 
-- 尚未接入 SQLite，当前任务数据由内存 Repository 提供，重启后会重置；首次启动日期已单独持久化。
 - 尚未接入 Android/iOS 本地系统通知，通知中心当前仅为前端交互原型。
+- 尚未实现提醒、偏好和个人资料 Repository；对应 v1 表已建好。
 - 尚未实现 JSON 导入导出和本地文件权限流程。
-- 尚未加入生产字体与品牌图标资源。
-- 尚未进行 OPPO、vivo 与 iPhone 真机验证。
+- 尚未加入生产字体；品牌图标已接入。
+- 尚未进行 OPPO 与 iPhone 真机验证；vivo Android 15 已完成前端和 SQLite 持久化验证。
 - 未进行部署。
-- 未使用 Git，也未创建任何 Git 提交。
+- Git 已启用；前端基线已有提交，本轮 SQLite 后端、测试、文档和品牌图标改动按用户授权纳入本地版本控制。
 
 ## 3. 已确认的产品方向
 
@@ -101,15 +105,15 @@ Stitch 项目还包含项目简报、核心技术难点、工程实施路径和�
 
 ## 6. 下一位开发者的建议起步顺序
 
-1. 与产品负责人确认 PRD 第 15 节的待确认事项和当前前端文案。
-2. 引入 `sqflite` 与 `path`，实现数据库 v1 Schema、迁移和 `TaskRepository`。
-3. 为 Repository 补充 CRUD、事务、升级和异常恢复测试，然后替换内存实现。
-4. 引入 `flutter_local_notifications` 与 `timezone`，实现通知权限、渠道、滚动排程和取消逻辑。
-5. 通过现有 `NotificationPort` 分别补齐 Android 与 iOS Adapter，必要时增加 Kotlin/Swift 桥接。
-6. 实现 `FilePort`、版本化 JSON 导出导入与清除数据确认。
-7. 补齐品牌字体、图标、启动画面、无障碍语义和小屏适配。
-8. 在 OPPO、vivo 真机验证锁屏、息屏、重启、低电量、权限撤销与后台限制。
-9. 在 iPhone 真机验证通知授权、前台/后台/锁屏展示、排程窗口、时区变化和应用升级。
+1. 评审本轮 SQLite v1 Schema、任务 Repository、状态流转与错误语义。
+2. 在现有 vivo Android 15 设备验证创建任务后杀进程、重启应用仍可读取数据。
+3. 确认 PRD 与接口文档中标题/备注长度差异：PRD 为 80/1000，现有 UI 与接口契约为 60/300。
+4. 实现偏好、提醒记录和个人资料 Repository，并补充启动时逾期任务协调。
+5. 引入 `flutter_local_notifications` 与 `timezone`，实现通知权限、渠道、滚动排程和取消逻辑。
+6. 通过现有 `NotificationPort` 分别补齐 Android 与 iOS Adapter，必要时增加 Kotlin/Swift 桥接。
+7. 实现 `FilePort`、版本化 JSON 导出导入与清除数据确认。
+8. 补齐品牌字体、图标、启动画面、无障碍语义和小屏适配。
+9. 完成 OPPO、vivo 与 iPhone 真机矩阵验证。
 10. 每完成一个阶段更新本交接文档。
 
 ## 7. 开工前必须确认
@@ -399,6 +403,125 @@ Stitch 项目还包含项目简报、核心技术难点、工程实施路径和�
 - `flutter test`：通过，共 4 项测试。
 - Web 预览：`http://127.0.0.1:51876` 已启动并确认显示“生存第 1 天”“0 个未完成”“今天没有警报”。
 - 本轮按用户要求未执行真机安装或调试；此前真机调试会话已停止。
+
+版本控制：
+
+- 本次未执行任何 Git 命令。
+
+### 2026-09-18：SQLite 任务数据层第一轮
+
+本次目标：
+
+- 按技术方案完成应用内 SQLite 后端第一轮，不引入服务器、账号、云数据库或远程服务。
+- 保持现有页面与 `TaskRepository` 调用方式不变，使 Android/iOS 生产入口具备任务持久化能力。
+
+实际完成：
+
+- 新增 SQLite v1 Schema，包含 `tasks`、`task_events`、`categories`、`reminders`、`preferences`、`profile`、`app_meta` 和文档要求的索引。
+- 默认写入学习、工作、生活、娱乐四个系统分类，并开启 SQLite 外键约束。
+- 新增 `AppDatabase`，实现单连接复用、并发打开保护、建库、前向迁移入口、关闭和稳定错误映射。
+- 新增 `SqliteTaskRepository`，实现任务 CRUD、字段校验、UTC 毫秒持久化、UUID、乐观版本校验和状态机。
+- 创建、更新和状态流转均在同一事务中写入任务与 `task_events`；重复提交相同终态不会重复写事件。
+- 新增 `AppFailure`，提供 `TASK_NOT_FOUND`、`VALIDATION_FAILED`、`DATABASE_UNAVAILABLE`、`MIGRATION_FAILED`、`STORAGE_FULL` 等稳定错误码。
+- `TaskItem` 增加 `updatedAt` 和 `version`；Controller 与 Repository 支持注入 `ClockPort`。
+- Android/iOS 生产入口切换到 SQLite Repository；Web 仅作为开发预览，继续使用内存 Repository。
+
+主要变更文件：
+
+- `lib/src/core/app_failure.dart`
+- `lib/src/data/database/app_database.dart`
+- `lib/src/data/database/schema.dart`
+- `lib/src/data/sqlite_task_repository.dart`
+- `lib/src/domain/task.dart`
+- `lib/src/domain/ports.dart`
+- `lib/src/data/in_memory_task_repository.dart`
+- `lib/main.dart`
+- `test/sqlite_task_repository_test.dart`
+- `pubspec.yaml`、`pubspec.lock`
+- `README.md`、`docs/TECHNICAL_SOLUTION.md`、`docs/API_CONTRACTS.md`
+
+依赖变化：
+
+- 新增生产依赖：`sqflite`、`path`、`uuid`。
+- 新增测试依赖：`sqflite_common_ffi`。
+- 未启用 SQLCipher；继续使用应用私有目录中的标准 SQLite，等待产品确认密钥恢复策略。
+
+验证结果：
+
+- `dart format lib test`：通过。
+- `flutter analyze`：通过，`No issues found`。
+- `flutter test`：通过，共 11 项测试；其中 7 项覆盖建库、索引、默认分类、事务事件、连接重开持久化、合法/非法状态流转、幂等、乐观锁、事务回滚和稳定错误码。
+- `flutter build apk --debug`：成功，生成 `build/app/outputs/flutter-apk/app-debug.apk`。
+- 构建过程中 Kotlin 增量缓存报告 C:/D: 跨盘符异常，但 Gradle 自动回退后构建成功；未发现 SQLite 或 Dart 编译错误。
+
+已知问题与待确认：
+
+- 本轮未把 APK 重新安装到真机，因此任务跨进程持久化目前由文件型 SQLite 自动化测试验证，尚待 vivo 真机复核。
+- 当前只实现任务 Repository；偏好、提醒、资料、导入导出和系统通知 Adapter 尚未实现。
+- v1 是首个正式 Schema，没有可供测试的旧生产 Schema；迁移入口已建立，首个升级测试应在 v2 出现时补充。
+- PRD 规定标题/备注上限为 80/1000，现有 UI 与接口契约为 60/300；本轮为了不破坏前端，沿用 60/300，需产品审批统一。
+- 物理删除仍沿用现有 UI 行为；“有历史记录优先归档”的 Use Case 策略尚未独立实现。
+
+版本控制：
+
+- 本次未执行任何 Git 命令，也未创建提交、分支或远程操作。
+
+### 2026-09-18：SQLite 版本 vivo Android 15 真机验证
+
+设备与安装：
+
+- 设备：vivo `V2362A`，Android 15 / API 35，ARM64，1080 × 2400。
+- Flutter 正常识别 USB 设备并成功构建、安装、启动 Debug APK。
+- 首次安装被手机端 USB 安装确认拒绝；保持解锁并在第二次弹窗允许后安装成功。
+- 包名与 Activity：`com.ddl.ddl_survival/.MainActivity`。
+
+验证步骤与结果：
+
+- 首次启动显示“生存第 1 天”“0 个未完成”，SQLite 空库状态正确。
+- 通过真实创建页新增 `USB_SQLite_Persist_20260918`，首页立即显示 1 个未完成和对应风险卡片。
+- 使用 `am force-stop` 强制结束应用，再重新启动 Activity；测试任务仍存在，证明真机跨进程持久化通过。
+- 通过任务详情和删除二次确认清理测试任务；首页恢复“0 个未完成”，未清除应用数据或首次启动日期。
+- 使用 `am start -W` 测得冷启动 `TotalTime: 1609ms`，低于 PRD 2.5 秒目标。
+- 重启后的应用日志未发现 Flutter 未捕获异常、SQLite 异常、数据库打开失败或崩溃。
+
+观察到的系统日志：
+
+- vivo/MediaTek 图形栈报告 `mali_gralloc` 格式尝试失败、`BLASTBufferQueue` 已获取帧数告警和一次 `Skipped 31 frames`。
+- 系统还报告 `UltraFrameworkComponentFactoryImpl` 缺失及 `OnBackInvokedCallback` 未启用。
+- 当前界面持续可见、交互正常、持久化正确；上述日志未造成用户可见故障。后续应在 Profile/Release 构建和更多 vivo/OPPO 机型上复核，区分 Debug/Impeller 与厂商系统噪声。
+
+代码与版本控制：
+
+- 本轮未修改业务代码，仅更新本交接记录。
+- 未执行任何 Git 命令。
+
+### 2026-09-18：品牌 App 图标接入
+
+本次目标：
+
+- 将用户提供的计时器/箭头图标移除外侧米白背景，并用于 Android/iOS 应用图标。
+
+实际完成：
+
+- 使用内置图像编辑能力执行透明背景抠图，保留橙色圆角底板及黑、米白、橙色计时器箭头主体。
+- 主图标保存为 `assets/branding/app_icon.png`，尺寸 1254 × 1254，像素格式为 32 位 ARGB。
+- 新增 `flutter_launcher_icons 0.14.4` 开发依赖及生成配置。
+- 生成 Android mdpi 至 xxxhdpi 传统图标、Android 自适应图标前景及 `#F46A3B` 背景。
+- 生成 iOS AppIcon 全尺寸资源；1024 图标 Alpha 为 255，透明区域使用 `#F46A3B` 填充，满足 iOS 不透明要求。
+
+验证结果：
+
+- `dart run flutter_launcher_icons`：成功生成 Android/iOS 图标。
+- `flutter analyze`：通过，`No issues found`。
+- `flutter test`：通过，共 11 项测试。
+- `flutter build apk --debug`：成功。
+- 新 APK 已安装到 vivo V2362A；设备当时处于锁屏状态，未完成桌面图标截图核对。
+
+数据影响：
+
+- `flutter install` 本次输出显示先卸载旧版再安装，因此应用私有数据被重置。
+- 安装前已确认应用为 0 个任务的空状态，没有任务数据损失；首次启动日期重置为当天。
+- 后续含真实用户数据的真机更新必须改用保留数据的 `adb install -r` 或等价升级安装流程。
 
 版本控制：
 

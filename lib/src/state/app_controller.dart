@@ -25,10 +25,15 @@ extension CopyToneLabel on CopyTone {
 }
 
 class AppController extends ChangeNotifier {
-  AppController(this._repository, this._installationStore);
+  AppController(
+    this._repository,
+    this._installationStore, {
+    ClockPort clock = const SystemClock(),
+  }) : _clock = clock;
 
   final TaskRepository _repository;
   final InstallationStore _installationStore;
+  final ClockPort _clock;
   List<TaskItem> _tasks = const [];
   DateTime? _firstLaunchDate;
   bool _loading = true;
@@ -46,7 +51,7 @@ class AppController extends ChangeNotifier {
   CopyTone get copyTone => _copyTone;
   List<TaskItem> get tasks => List.unmodifiable(_tasks);
 
-  DateTime get now => DateTime.now();
+  DateTime get now => _clock.now();
 
   int get survivalDays {
     final today = DateTime(now.year, now.month, now.day);

@@ -50,6 +50,13 @@ abstract interface class ClockPort {
   DateTime now();
 }
 
+class SystemClock implements ClockPort {
+  const SystemClock();
+
+  @override
+  DateTime now() => DateTime.now();
+}
+
 abstract interface class InstallationStore {
   Future<DateTime> getOrCreateFirstLaunchDate();
 }

@@ -64,9 +64,11 @@ class TaskItem {
     required this.estimatedMinutes,
     required this.status,
     required this.createdAt,
+    DateTime? updatedAt,
+    this.version = 1,
     this.notes = '',
     this.completedAt,
-  });
+  }) : updatedAt = updatedAt ?? createdAt;
 
   final String id;
   final String title;
@@ -76,6 +78,8 @@ class TaskItem {
   final int estimatedMinutes;
   final TaskStatus status;
   final DateTime createdAt;
+  final DateTime updatedAt;
+  final int version;
   final String notes;
   final DateTime? completedAt;
 
@@ -133,6 +137,8 @@ class TaskItem {
     TaskStatus? status,
     String? notes,
     DateTime? completedAt,
+    DateTime? updatedAt,
+    int? version,
   }) {
     return TaskItem(
       id: id,
@@ -143,6 +149,8 @@ class TaskItem {
       estimatedMinutes: estimatedMinutes ?? this.estimatedMinutes,
       status: status ?? this.status,
       createdAt: createdAt,
+      updatedAt: updatedAt ?? this.updatedAt,
+      version: version ?? this.version,
       notes: notes ?? this.notes,
       completedAt: completedAt ?? this.completedAt,
     );

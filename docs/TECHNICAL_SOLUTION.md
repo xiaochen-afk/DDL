@@ -213,6 +213,7 @@ MVP 数据量较小，不引入全文搜索。任务数量或备注规模达到�
 - `archived_at INTEGER`。
 - `risk_score_snapshot INTEGER`。
 - `risk_config_version INTEGER NOT NULL`。
+- `version INTEGER NOT NULL`：从 1 开始递增，用于乐观并发控制。
 - `created_at INTEGER NOT NULL`。
 - `updated_at INTEGER NOT NULL`。
 

@@ -1,8 +1,8 @@
 # DDL 生存指南接口文档
 
-> 文档版本：1.1  
-> 更新时间：2026-09-18  
-> 当前实现阶段：Flutter 前端与内存数据源  
+> 文档版本：1.2
+> 更新时间：2026-09-18
+> 当前实现阶段：Flutter 前端与 SQLite 任务数据层
 > 适用平台：Android、iOS
 
 ## 1. 文档范围
@@ -12,7 +12,7 @@
 接口目标：
 
 - 页面不直接拼接 SQL，不直接调用 Android 或 iOS API。
-- 当前内存数据源可以无缝替换为 `sqflite` Repository。
+- Widget 测试可继续注入内存数据源，Android/iOS 生产入口使用 `sqflite` Repository。
 - Android/iOS 通知实现可以独立替换，不影响任务页面。
 - 所有写操作返回最终领域对象，页面不猜测持久化结果。
 - 错误以稳定错误码表达，不把插件异常直接显示给用户。
@@ -278,11 +278,12 @@ abstract interface class InstallationStore {
 ## 12. 当前 Mock 与后续实现映射
 
 - `InMemoryTaskRepository`：已实现，默认数据为空，供页面交互和 Widget 测试使用。
-- `SqfliteTaskRepository`：未实现，下一开发阶段接入。
+- `SqliteTaskRepository`：已实现，覆盖任务 CRUD、乐观版本校验、状态流转、事务事件和稳定错误码。
+- `AppDatabase`：已实现数据库 v1 建库、默认分类、索引、外键和前向迁移入口。
 - `SharedPreferencesInstallationStore`：已实现，持久保存首次启动日期。
 - `InMemoryInstallationStore`：已实现，供单元测试和 Widget 测试使用。
 - `NotificationPort`：契约已定义，Android/iOS Adapter 未实现。
 - `FilePort`：契约已定义，Android/iOS Adapter 未实现。
-- `ClockPort`：契约已定义，风险算法目前仍有少量直接读取系统时间，数据层接入时完成注入。
+- `ClockPort`：已提供 `SystemClock`，Controller 与 Repository 均支持测试时注入。
 
 页面层不得因为 Mock 尚未替换而调用 `sqflite` 或通知插件。替换完成的验收标准是：Widget 测试无需修改，只替换依赖注入对象。
