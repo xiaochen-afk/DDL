@@ -9,9 +9,12 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  flutter_local_notifications: ^22.3.1
+  flutter_timezone: ^5.1.0
   path: ^1.9.1
   shared_preferences: ^2.5.3
   sqflite: ^2.4.2
+  timezone: ^0.11.1
   uuid: ^4.5.1
 
 dev_dependencies:
@@ -24,11 +27,11 @@ flutter_launcher_icons:
   android: true
   ios: true
   image_path: assets/branding/app_icon.png
-  adaptive_icon_background: "#F46A3B"
+  adaptive_icon_background: "#FFFFFF"
   adaptive_icon_foreground: assets/branding/app_icon.png
   adaptive_icon_foreground_inset: 16
   remove_alpha_ios: true
-  background_color_ios: "#F46A3B"
+  background_color_ios: "#FFFFFF"
 
 flutter:
   uses-material-design: true

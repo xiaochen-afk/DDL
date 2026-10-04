@@ -87,6 +87,7 @@ class HomeScreen extends StatelessWidget {
                 child: TaskCard(
                   task: task,
                   now: now,
+                  risk: controller.riskFor(task).score,
                   onTap: () => onTaskTap(task.id),
                   onComplete: () => _complete(context, task.id, task.title),
                 ),
@@ -100,11 +101,12 @@ class HomeScreen extends StatelessWidget {
   }
 
   Future<void> _complete(BuildContext context, String id, String title) async {
-    await controller.completeTask(id);
+    final completed = await controller.completeTask(id);
     if (!context.mounted) return;
+    if (!completed) controller.setNavigationIndex(2);
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text('已拆除：$title'),
+        content: Text(completed ? '已拆除：$title' : '任务已到期，请在忏悔录选择结案方式。'),
         behavior: SnackBarBehavior.floating,
       ),
     );
@@ -124,7 +126,7 @@ class HomeScreen extends StatelessWidget {
             const SizedBox(height: 8),
             Text(
               controller.overdueTasks.isEmpty
-                  ? '没有新的警报。通知调度器一切正常。'
+                  ? '没有新的逾期任务。提醒权限与精确度可在「我的」页面查看。'
                   : '有 ${controller.overdueTasks.length} 个任务已经越过 DDL，请前往忏悔录处理。',
             ),
             const SizedBox(height: 18),

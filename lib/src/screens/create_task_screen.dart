@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../domain/task.dart';
 import '../state/app_controller.dart';
@@ -6,9 +7,14 @@ import '../theme/app_theme.dart';
 import '../widgets/common.dart';
 
 class CreateTaskScreen extends StatefulWidget {
-  const CreateTaskScreen({super.key, required this.controller});
+  const CreateTaskScreen({
+    super.key,
+    required this.controller,
+    this.initialTask,
+  });
 
   final AppController controller;
+  final TaskItem? initialTask;
 
   @override
   State<CreateTaskScreen> createState() => _CreateTaskScreenState();
@@ -18,6 +24,7 @@ class _CreateTaskScreenState extends State<CreateTaskScreen> {
   final _formKey = GlobalKey<FormState>();
   final _titleController = TextEditingController();
   final _notesController = TextEditingController();
+  final _minutesController = TextEditingController(text: '60');
   late DateTime _dueAt;
   TaskCategory _category = TaskCategory.study;
   bool _important = true;
@@ -27,6 +34,17 @@ class _CreateTaskScreenState extends State<CreateTaskScreen> {
   @override
   void initState() {
     super.initState();
+    final initial = widget.initialTask;
+    if (initial != null) {
+      _titleController.text = initial.title;
+      _notesController.text = initial.notes;
+      _minutesController.text = initial.estimatedMinutes.toString();
+      _dueAt = initial.dueAt;
+      _category = initial.category;
+      _important = initial.isImportant;
+      _estimatedMinutes = initial.estimatedMinutes;
+      return;
+    }
     final tomorrow = DateTime.now().add(const Duration(days: 1));
     _dueAt = DateTime(tomorrow.year, tomorrow.month, tomorrow.day, 18);
   }
@@ -35,6 +53,7 @@ class _CreateTaskScreenState extends State<CreateTaskScreen> {
   void dispose() {
     _titleController.dispose();
     _notesController.dispose();
+    _minutesController.dispose();
     super.dispose();
   }
 
@@ -53,7 +72,10 @@ class _CreateTaskScreenState extends State<CreateTaskScreen> {
     final quadrant = preview.quadrantAt(DateTime.now());
 
     return Scaffold(
-      appBar: AppBar(title: const Text('签下生死状'), centerTitle: false),
+      appBar: AppBar(
+        title: Text(widget.initialTask == null ? '签下生死状' : '编辑任务'),
+        centerTitle: false,
+      ),
       body: SafeArea(
         child: Form(
           key: _formKey,
@@ -75,7 +97,9 @@ class _CreateTaskScreenState extends State<CreateTaskScreen> {
                     const SizedBox(width: 12),
                     Expanded(
                       child: Text(
-                        '先写下来，再决定怎么拆。必填只有名称、截止时间和重要度。',
+                        widget.initialTask == null
+                            ? '先写下来，再决定怎么拆。必填只有名称、截止时间和重要度。'
+                            : '调整任务内容后，风险与排序会立即重算。',
                         style: Theme.of(
                           context,
                         ).textTheme.bodyMedium?.copyWith(color: Colors.white70),
@@ -91,7 +115,7 @@ class _CreateTaskScreenState extends State<CreateTaskScreen> {
                 controller: _titleController,
                 autofocus: true,
                 textInputAction: TextInputAction.next,
-                maxLength: 60,
+                maxLength: taskTitleMaxLength,
                 decoration: const InputDecoration(
                   hintText: '例如：提交交互设计期末作业',
                   prefixIcon: Icon(Icons.task_alt_rounded),
@@ -216,11 +240,29 @@ class _CreateTaskScreenState extends State<CreateTaskScreen> {
                           minutes < 60 ? '$minutes 分钟' : '${minutes ~/ 60} 小时',
                         ),
                         selected: _estimatedMinutes == minutes,
-                        onSelected: (_) =>
-                            setState(() => _estimatedMinutes = minutes),
+                        onSelected: (_) => setState(() {
+                          _estimatedMinutes = minutes;
+                          _minutesController.text = minutes.toString();
+                        }),
                       ),
                     )
                     .toList(),
+              ),
+              const SizedBox(height: 8),
+              TextFormField(
+                controller: _minutesController,
+                keyboardType: TextInputType.number,
+                inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                decoration: const InputDecoration(
+                  labelText: '自定义分钟数',
+                  suffixText: '分钟',
+                ),
+                onChanged: (value) => setState(() {
+                  _estimatedMinutes = int.tryParse(value) ?? 0;
+                }),
+                validator: (value) => (int.tryParse(value ?? '') ?? 0) > 0
+                    ? null
+                    : '预计耗时必须大于 0 分钟',
               ),
               const SizedBox(height: 22),
               const _FieldLabel('备注'),
@@ -228,7 +270,7 @@ class _CreateTaskScreenState extends State<CreateTaskScreen> {
               TextFormField(
                 controller: _notesController,
                 maxLines: 4,
-                maxLength: 300,
+                maxLength: taskNotesMaxLength,
                 decoration: const InputDecoration(
                   hintText: '补充提交格式、资料位置或下一步行动……',
                   alignLabelWithHint: true,
@@ -238,7 +280,11 @@ class _CreateTaskScreenState extends State<CreateTaskScreen> {
               SizedBox(
                 height: 54,
                 child: FilledButton.icon(
-                  key: const Key('create_task_submit'),
+                  key: Key(
+                    widget.initialTask == null
+                        ? 'create_task_submit'
+                        : 'edit_task_submit',
+                  ),
                   onPressed: _submitting ? null : _submit,
                   icon: _submitting
                       ? const SizedBox(
@@ -247,7 +293,13 @@ class _CreateTaskScreenState extends State<CreateTaskScreen> {
                           child: CircularProgressIndicator(strokeWidth: 2),
                         )
                       : const Icon(Icons.draw_rounded),
-                  label: Text(_submitting ? '正在保存…' : '签下生死状'),
+                  label: Text(
+                    _submitting
+                        ? '正在保存…'
+                        : widget.initialTask == null
+                        ? '签下生死状'
+                        : '保存修改',
+                  ),
                 ),
               ),
             ],
@@ -268,7 +320,10 @@ class _CreateTaskScreenState extends State<CreateTaskScreen> {
     final date = await showDatePicker(
       context: context,
       initialDate: _dueAt,
-      firstDate: DateTime.now().subtract(const Duration(days: 1)),
+      firstDate:
+          _dueAt.isBefore(DateTime.now().subtract(const Duration(days: 1)))
+          ? _dueAt
+          : DateTime.now().subtract(const Duration(days: 1)),
       lastDate: DateTime.now().add(const Duration(days: 730)),
     );
     if (date == null || !mounted) return;
@@ -295,7 +350,7 @@ class _CreateTaskScreenState extends State<CreateTaskScreen> {
         context: context,
         builder: (context) => AlertDialog(
           title: const Text('截止时间已经过去'),
-          content: const Text('仍然保存会让任务立即进入高风险状态。确定继续吗？'),
+          content: const Text('仍然保存会让任务立即进入忏悔录，等待你选择结案方式。确定继续吗？'),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(context, false),
@@ -312,18 +367,38 @@ class _CreateTaskScreenState extends State<CreateTaskScreen> {
     }
 
     setState(() => _submitting = true);
-    final created = await widget.controller.addTask(
-      TaskDraft(
+    try {
+      final draft = TaskDraft(
         title: _titleController.text.trim(),
         dueAt: _dueAt,
         category: _category,
         isImportant: _important,
         estimatedMinutes: _estimatedMinutes,
         notes: _notesController.text.trim(),
-      ),
-    );
-    if (!mounted) return;
-    Navigator.pop(context, created.title);
+      );
+      final initial = widget.initialTask;
+      final saved = initial == null
+          ? await widget.controller.addTask(draft)
+          : await widget.controller.updateTask(
+              initial.copyWith(
+                title: draft.title,
+                dueAt: draft.dueAt,
+                category: draft.category,
+                isImportant: draft.isImportant,
+                estimatedMinutes: draft.estimatedMinutes,
+                notes: draft.notes,
+              ),
+            );
+      if (!mounted) return;
+      Navigator.pop(context, saved.title);
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('保存失败，任务可能已变化，请返回刷新后重试。')));
+    } finally {
+      if (mounted) setState(() => _submitting = false);
+    }
   }
 }
 

@@ -194,6 +194,7 @@ class TaskCard extends StatelessWidget {
     super.key,
     required this.task,
     required this.now,
+    required this.risk,
     required this.onTap,
     this.onComplete,
     this.compact = false,
@@ -201,13 +202,13 @@ class TaskCard extends StatelessWidget {
 
   final TaskItem task;
   final DateTime now;
+  final int risk;
   final VoidCallback onTap;
   final VoidCallback? onComplete;
   final bool compact;
 
   @override
   Widget build(BuildContext context) {
-    final risk = task.riskScoreAt(now);
     final color = task.isDone ? AppColors.mint : riskColor(risk);
     return PaperCard(
       onTap: onTap,

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../state/app_controller.dart';
 import '../theme/app_theme.dart';
@@ -42,14 +43,14 @@ class ProfileScreen extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        'DDL 幸存者',
+                        controller.profile.nickname,
                         style: Theme.of(
                           context,
                         ).textTheme.titleLarge?.copyWith(color: Colors.white),
                       ),
                       const SizedBox(height: 3),
                       Text(
-                        '今天也在努力把事情做完。',
+                        controller.profile.motto,
                         style: Theme.of(
                           context,
                         ).textTheme.bodySmall?.copyWith(color: Colors.white60),
@@ -58,7 +59,7 @@ class ProfileScreen extends StatelessWidget {
                   ),
                 ),
                 IconButton(
-                  onPressed: () => _showStub(context, '个人资料编辑将在数据层接入后开放。'),
+                  onPressed: () => _editProfile(context),
                   icon: const Icon(Icons.edit_outlined, color: Colors.white),
                   tooltip: '编辑资料',
                 ),
@@ -96,22 +97,93 @@ class ProfileScreen extends StatelessWidget {
               children: [
                 SwitchListTile(
                   value: controller.notificationsEnabled,
-                  onChanged: controller.setNotificationsEnabled,
-                  title: const Text('系统通知'),
-                  subtitle: Text(
-                    controller.notificationsEnabled
-                        ? '已开启，等待系统权限接入'
-                        : '已关闭，仅保留应用内提醒',
+                  onChanged: (value) => _save(
+                    context,
+                    () => controller.setNotificationsEnabled(value),
                   ),
+                  title: const Text('提醒计划'),
+                  subtitle: Text(_notificationSubtitle()),
                   secondary: const Icon(Icons.notifications_active_outlined),
                 ),
+                if (controller.notificationsEnabled &&
+                    controller.notificationCapabilities != null &&
+                    !controller.notificationCapabilities!.authorized)
+                  ListTile(
+                    leading: const Icon(Icons.notifications_off_outlined),
+                    title: const Text('系统通知未授权'),
+                    subtitle: const Text('提醒计划已保存，但手机不会弹出通知'),
+                    trailing: TextButton(
+                      onPressed: () => _save(
+                        context,
+                        controller.requestNotificationPermission,
+                      ),
+                      child: const Text('申请权限'),
+                    ),
+                    onTap: controller.openNotificationSettings,
+                  ),
+                if (controller.notificationsEnabled &&
+                    controller.notificationCapabilities?.authorized == true &&
+                    controller
+                            .notificationCapabilities
+                            ?.exactPermissionRequired ==
+                        true &&
+                    controller.notificationCapabilities?.exact == false)
+                  ListTile(
+                    leading: const Icon(Icons.schedule_outlined),
+                    title: const Text('当前为非精确提醒'),
+                    subtitle: const Text('系统可能延迟送达，无法保证指定分钟'),
+                    trailing: TextButton(
+                      onPressed: () => _save(
+                        context,
+                        controller.requestExactReminderPermission,
+                      ),
+                      child: const Text('申请精确'),
+                    ),
+                  ),
+                if (controller.notificationsEnabled &&
+                    controller.notificationCapabilities?.authorized == true)
+                  ListTile(
+                    leading: const Icon(Icons.settings_outlined),
+                    title: const Text('系统通知设置'),
+                    subtitle: const Text(
+                      '横幅、锁屏及勿扰仍由手机系统控制；vivo/OPPO 还需检查后台耗电限制',
+                    ),
+                    onTap: controller.openNotificationSettings,
+                  ),
+                if (controller.reminderSyncErrorCode != null)
+                  ListTile(
+                    leading: const Icon(Icons.error_outline_rounded),
+                    title: const Text('提醒计划同步失败'),
+                    subtitle: Text(
+                      '错误码：${controller.reminderSyncErrorCode}；下次启动或返回应用时重试',
+                    ),
+                  ),
                 const Divider(height: 1),
                 ListTile(
                   leading: const Icon(Icons.bedtime_outlined),
                   title: const Text('免打扰时间'),
-                  subtitle: const Text('23:00 — 07:30'),
+                  subtitle: Text(
+                    '${_minuteLabel(controller.preferences.quietHoursStartMinute)} — '
+                    '${_minuteLabel(controller.preferences.quietHoursEndMinute)}',
+                  ),
                   trailing: const Icon(Icons.chevron_right_rounded),
-                  onTap: () => _showStub(context, '免打扰时间编辑交互已预留。'),
+                  onTap: () => _editQuietHours(context),
+                ),
+                const Divider(height: 1),
+                ListTile(
+                  leading: const Icon(Icons.schedule_outlined),
+                  title: const Text('默认提前提醒'),
+                  subtitle: Text(
+                    controller.preferences.defaultReminderOffsetsMinutes
+                        .map(
+                          (minutes) => minutes >= 60 && minutes % 60 == 0
+                              ? '${minutes ~/ 60} 小时'
+                              : '$minutes 分钟',
+                        )
+                        .join('、'),
+                  ),
+                  trailing: const Icon(Icons.chevron_right_rounded),
+                  onTap: () => _editReminderOffsets(context),
                 ),
               ],
             ),
@@ -127,7 +199,7 @@ class ProfileScreen extends StatelessWidget {
                 .toList(),
             selected: {controller.copyTone},
             onSelectionChanged: (values) =>
-                controller.setCopyTone(values.first),
+                _save(context, () => controller.setCopyTone(values.first)),
           ),
           const SizedBox(height: 22),
           Text('工具箱', style: Theme.of(context).textTheme.titleLarge),
@@ -164,10 +236,156 @@ class ProfileScreen extends StatelessWidget {
     );
   }
 
+  String _notificationSubtitle() {
+    if (!controller.notificationsEnabled) return '已关闭，不生成新的提醒计划';
+    final capabilities = controller.notificationCapabilities;
+    if (capabilities == null) return '本机计划已保存；设备通知能力尚不可用';
+    if (!capabilities.authorized) return '本机计划已保存；等待系统通知授权';
+    if (capabilities.exactPermissionRequired && !capabilities.exact) {
+      return '已降级为非精确排程，无法保证指定分钟送达';
+    }
+    return '已排程目标分钟；实际送达受系统设置影响';
+  }
+
   void _showStub(BuildContext context, String message) {
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  String _minuteLabel(int minute) =>
+      '${(minute ~/ 60).toString().padLeft(2, '0')}:'
+      '${(minute % 60).toString().padLeft(2, '0')}';
+
+  Future<void> _save(
+    BuildContext context,
+    Future<void> Function() action,
+  ) async {
+    try {
+      await action();
+    } catch (_) {
+      if (!context.mounted) return;
+      _showStub(context, '保存失败，请稍后重试。');
+    }
+  }
+
+  Future<void> _editProfile(BuildContext context) async {
+    var name = controller.profile.nickname;
+    var motto = controller.profile.motto;
+    final result = await showDialog<(String, String)>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('编辑本地资料'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextFormField(
+              initialValue: name,
+              onChanged: (value) => name = value,
+              maxLength: 40,
+              decoration: const InputDecoration(labelText: '昵称'),
+            ),
+            TextFormField(
+              initialValue: motto,
+              onChanged: (value) => motto = value,
+              maxLength: 140,
+              decoration: const InputDecoration(labelText: '个性签名'),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () {
+              if (name.trim().isEmpty) return;
+              Navigator.pop(dialogContext, (name.trim(), motto.trim()));
+            },
+            child: const Text('保存'),
+          ),
+        ],
+      ),
+    );
+    if (result != null && context.mounted) {
+      await _save(context, () => controller.saveProfile(result.$1, result.$2));
+    }
+  }
+
+  Future<void> _editQuietHours(BuildContext context) async {
+    final current = controller.preferences;
+    final start = await showTimePicker(
+      context: context,
+      helpText: '免打扰开始时间',
+      initialTime: TimeOfDay(
+        hour: current.quietHoursStartMinute ~/ 60,
+        minute: current.quietHoursStartMinute % 60,
+      ),
+    );
+    if (start == null || !context.mounted) return;
+    final end = await showTimePicker(
+      context: context,
+      helpText: '免打扰结束时间',
+      initialTime: TimeOfDay(
+        hour: current.quietHoursEndMinute ~/ 60,
+        minute: current.quietHoursEndMinute % 60,
+      ),
+    );
+    if (end == null || !context.mounted) return;
+    await _save(
+      context,
+      () => controller.setQuietHours(
+        start.hour * 60 + start.minute,
+        end.hour * 60 + end.minute,
+      ),
+    );
+  }
+
+  Future<void> _editReminderOffsets(BuildContext context) async {
+    var input = controller.preferences.defaultReminderOffsetsMinutes.join(',');
+    final offsets = await showDialog<List<int>>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('默认提前提醒'),
+        content: TextFormField(
+          initialValue: input,
+          onChanged: (value) => input = value,
+          keyboardType: TextInputType.text,
+          inputFormatters: [
+            FilteringTextInputFormatter.allow(RegExp(r'[0-9,， ]')),
+          ],
+          decoration: const InputDecoration(
+            labelText: '提前分钟数，以逗号分隔',
+            helperText: '例如 1440,180 代表提前 24 小时和 3 小时',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () {
+              final parsed = input
+                  .replaceAll('，', ',')
+                  .split(',')
+                  .map((part) => int.tryParse(part.trim()))
+                  .toList();
+              if (parsed.isEmpty ||
+                  parsed.any((value) => value == null || value <= 0)) {
+                return;
+              }
+              Navigator.pop(dialogContext, parsed.cast<int>());
+            },
+            child: const Text('保存'),
+          ),
+        ],
+      ),
+    );
+    if (offsets != null && context.mounted) {
+      await _save(context, () => controller.setDefaultReminderOffsets(offsets));
+    }
   }
 
   void _showRules(BuildContext context) {
@@ -204,10 +422,10 @@ class ProfileScreen extends StatelessWidget {
           children: [
             Text('本地数据管理', style: Theme.of(context).textTheme.headlineMedium),
             const SizedBox(height: 8),
-            const Text('当前前端使用内存数据演示。SQLite 接入后，这里将提供 JSON 导出、覆盖导入和清除确认。'),
+            const Text('任务已保存在本机 SQLite。JSON 导出、导入和清除功能尚未接入。'),
             const SizedBox(height: 18),
             FilledButton.icon(
-              onPressed: () => _showStub(context, '导出接口已写入接口文档，等待数据层实现。'),
+              onPressed: () => _showStub(context, 'JSON 导出功能尚未接入。'),
               icon: const Icon(Icons.ios_share_rounded),
               label: const Text('导出全部数据'),
             ),

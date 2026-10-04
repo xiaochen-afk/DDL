@@ -48,7 +48,7 @@ class AppDatabase {
           },
           onCreate: (db, version) async {
             try {
-              await createSchemaV1(db);
+              await createSchemaV2(db);
             } catch (error) {
               throw AppFailure(
                 code: 'MIGRATION_FAILED',

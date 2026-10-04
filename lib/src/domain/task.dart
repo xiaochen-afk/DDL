@@ -1,3 +1,6 @@
+const int taskTitleMaxLength = 80;
+const int taskNotesMaxLength = 1000;
+
 enum TaskCategory { study, work, life, fun }
 
 extension TaskCategoryLabel on TaskCategory {
@@ -102,30 +105,6 @@ class TaskItem {
     if (!urgent && isImportant) return TaskQuadrant.planned;
     if (urgent && !isImportant) return TaskQuadrant.quickWin;
     return TaskQuadrant.later;
-  }
-
-  int riskScoreAt(DateTime now) {
-    if (isDone ||
-        status == TaskStatus.archived ||
-        status == TaskStatus.missed) {
-      return 0;
-    }
-
-    final minutesLeft = dueAt.difference(now).inMinutes;
-    final double timePressure = switch (minutesLeft) {
-      <= 0 => 45,
-      <= 60 => 42,
-      <= 180 => 36,
-      <= 720 => 29,
-      <= 1440 => 22,
-      <= 4320 => 13,
-      _ => 5,
-    };
-    final importance = isImportant ? 20 : 0;
-    final workloadRatio =
-        estimatedMinutes / (minutesLeft <= 0 ? 1 : minutesLeft);
-    final workload = (workloadRatio * 30).clamp(0, 15).round();
-    return (timePressure + importance + workload + 6).round().clamp(0, 100);
   }
 
   TaskItem copyWith({

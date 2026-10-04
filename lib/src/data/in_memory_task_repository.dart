@@ -8,6 +8,8 @@ class InMemoryTaskRepository implements TaskRepository {
 
   final ClockPort _clock;
   final List<TaskItem> _tasks = [];
+  final Set<String> _history = {};
+  final Map<String, TaskStatus> _settledOutcomes = {};
   int _sequence = 1;
 
   @override
@@ -40,6 +42,37 @@ class InMemoryTaskRepository implements TaskRepository {
       );
     }
     _tasks.removeAt(index);
+    _history.remove(id);
+    _settledOutcomes.remove(id);
+  }
+
+  @override
+  Future<bool> hasMeaningfulHistory(String id) async {
+    final task = await getTask(id);
+    if (task == null) {
+      throw const AppFailure(
+        code: 'TASK_NOT_FOUND',
+        message: 'Task does not exist.',
+      );
+    }
+    return _history.contains(id) || task.status != TaskStatus.active;
+  }
+
+  @override
+  Future<Map<TaskCategory, double>> missedRatesByCategory() async {
+    final result = <TaskCategory, double>{};
+    for (final category in TaskCategory.values) {
+      final settled = _tasks.where(
+        (task) =>
+            task.category == category && _settledOutcomes.containsKey(task.id),
+      );
+      final count = settled.length;
+      final missed = settled
+          .where((task) => _settledOutcomes[task.id] == TaskStatus.missed)
+          .length;
+      result[category] = count == 0 ? 0 : missed / count;
+    }
+    return result;
   }
 
   @override
@@ -54,6 +87,25 @@ class InMemoryTaskRepository implements TaskRepository {
   Future<List<TaskItem>> listTasks() async => List.unmodifiable(_tasks);
 
   @override
+  Future<int> reconcileOverdue(DateTime asOf) async {
+    var changed = 0;
+    for (var index = 0; index < _tasks.length; index++) {
+      final task = _tasks[index];
+      if (task.status != TaskStatus.active || asOf.isBefore(task.dueAt)) {
+        continue;
+      }
+      _tasks[index] = task.copyWith(
+        status: TaskStatus.overdueReview,
+        updatedAt: asOf,
+        version: task.version + 1,
+      );
+      _history.add(task.id);
+      changed++;
+    }
+    return changed;
+  }
+
+  @override
   Future<TaskItem> transitionTask(String id, TaskStatus target) async {
     final index = _tasks.indexWhere((task) => task.id == id);
     if (index < 0) {
@@ -64,22 +116,37 @@ class InMemoryTaskRepository implements TaskRepository {
     }
     final current = _tasks[index];
     if (current.status == target) return current;
-    if (!_canTransition(current.status, target)) {
+    final now = _clock.now();
+    final effectiveTarget =
+        current.status == TaskStatus.active &&
+            target == TaskStatus.completed &&
+            !now.isBefore(current.dueAt)
+        ? TaskStatus.overdueReview
+        : target;
+    if (!_canTransition(current.status, effectiveTarget) ||
+        (effectiveTarget == TaskStatus.overdueReview &&
+            now.isBefore(current.dueAt))) {
       throw const AppFailure(
         code: 'VALIDATION_FAILED',
         message: 'Task status transition is not allowed.',
       );
     }
     final completed =
-        target == TaskStatus.completed || target == TaskStatus.completedLate;
-    final now = _clock.now();
+        effectiveTarget == TaskStatus.completed ||
+        effectiveTarget == TaskStatus.completedLate;
     final updated = current.copyWith(
-      status: target,
+      status: effectiveTarget,
       completedAt: completed ? now : current.completedAt,
       updatedAt: now,
       version: current.version + 1,
     );
     _tasks[index] = updated;
+    _history.add(id);
+    if (effectiveTarget == TaskStatus.completed ||
+        effectiveTarget == TaskStatus.completedLate ||
+        effectiveTarget == TaskStatus.missed) {
+      _settledOutcomes[id] = effectiveTarget;
+    }
     return updated;
   }
 
@@ -99,12 +166,20 @@ class InMemoryTaskRepository implements TaskRepository {
         message: 'Task was changed by another operation.',
       );
     }
+    if (current.status != TaskStatus.active || task.status != current.status) {
+      throw const AppFailure(
+        code: 'VALIDATION_FAILED',
+        message: 'Only active tasks can be edited.',
+      );
+    }
     _validateTask(task);
     final updated = task.copyWith(
+      title: task.title.trim(),
       updatedAt: _clock.now(),
       version: task.version + 1,
     );
     _tasks[index] = updated;
+    _history.add(task.id);
     return updated;
   }
 
@@ -126,9 +201,9 @@ class InMemoryTaskRepository implements TaskRepository {
   static void _validateDraft(TaskDraft draft) {
     final title = draft.title.trim();
     if (title.isEmpty ||
-        title.length > 60 ||
+        title.length > taskTitleMaxLength ||
         draft.estimatedMinutes <= 0 ||
-        draft.notes.length > 300) {
+        draft.notes.length > taskNotesMaxLength) {
       throw const AppFailure(
         code: 'VALIDATION_FAILED',
         message: 'Task fields are invalid.',

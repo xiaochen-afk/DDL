@@ -5,6 +5,7 @@ import 'package:uuid/uuid.dart';
 
 import '../core/app_failure.dart';
 import '../domain/ports.dart';
+import '../domain/risk_engine.dart';
 import '../domain/task.dart';
 import 'database/app_database.dart';
 import 'database/schema.dart';
@@ -31,6 +32,49 @@ class SqliteTaskRepository implements TaskRepository {
   }
 
   @override
+  Future<int> reconcileOverdue(DateTime asOf) {
+    return _guard(() async {
+      final db = await _appDatabase.database;
+      return db.transaction((transaction) async {
+        final dueTasks = await transaction.query(
+          'tasks',
+          where: 'status = ? AND due_at <= ?',
+          whereArgs: ['PENDING', _toUtcMilliseconds(asOf)],
+        );
+        for (final row in dueTasks) {
+          final task = _taskFromRow(row);
+          final changed = await transaction.update(
+            'tasks',
+            {
+              'status': 'OVERDUE_REVIEW',
+              'updated_at': _toUtcMilliseconds(asOf),
+              'risk_score_snapshot': 0,
+              'version': task.version + 1,
+            },
+            where: 'id = ? AND status = ? AND version = ?',
+            whereArgs: [task.id, 'PENDING', task.version],
+          );
+          if (changed != 1) {
+            throw const AppFailure(
+              code: 'VALIDATION_FAILED',
+              message: 'Task changed during overdue reconciliation.',
+            );
+          }
+          await _insertEvent(
+            transaction,
+            taskId: task.id,
+            eventType: 'TASK_OVERDUE',
+            occurredAt: asOf,
+            metadata: {'from': 'PENDING', 'to': 'OVERDUE_REVIEW'},
+          );
+        }
+        await _refreshRiskSnapshots(transaction, asOf);
+        return dueTasks.length;
+      });
+    });
+  }
+
+  @override
   Future<TaskItem?> getTask(String id) {
     return _guard(() async {
       final db = await _appDatabase.database;
@@ -41,6 +85,54 @@ class SqliteTaskRepository implements TaskRepository {
         limit: 1,
       );
       return rows.isEmpty ? null : _taskFromRow(rows.first);
+    });
+  }
+
+  @override
+  Future<bool> hasMeaningfulHistory(String id) {
+    return _guard(() async {
+      final db = await _appDatabase.database;
+      final rows = await db.query(
+        'tasks',
+        where: 'id = ?',
+        whereArgs: [id],
+        limit: 1,
+      );
+      if (rows.isEmpty) {
+        throw const AppFailure(
+          code: 'TASK_NOT_FOUND',
+          message: 'Task does not exist.',
+        );
+      }
+      if (_taskFromRow(rows.first).status != TaskStatus.active) return true;
+      final events = await db.query(
+        'task_events',
+        columns: ['id'],
+        where: 'task_id = ? AND event_type != ?',
+        whereArgs: [id, 'TASK_CREATED'],
+        limit: 1,
+      );
+      return events.isNotEmpty;
+    });
+  }
+
+  @override
+  Future<Map<TaskCategory, double>> missedRatesByCategory() {
+    return _guard(() async {
+      final db = await _appDatabase.database;
+      final rows = await db.rawQuery('''
+        SELECT t.category_id AS category,
+          SUM(CASE WHEN e.event_type = 'TASK_MISSED' THEN 1 ELSE 0 END) AS missed,
+          COUNT(*) AS settled
+        FROM task_events e JOIN tasks t ON t.id = e.task_id
+        WHERE e.event_type IN ('TASK_MISSED', 'TASK_COMPLETED', 'TASK_COMPLETED_LATE')
+        GROUP BY t.category_id
+      ''');
+      return {
+        for (final row in rows)
+          _categoryFromDatabase(row['category']! as String):
+              (row['missed']! as int) / (row['settled']! as int),
+      };
     });
   }
 
@@ -71,6 +163,7 @@ class SqliteTaskRepository implements TaskRepository {
           eventType: 'TASK_CREATED',
           occurredAt: now,
         );
+        await _refreshRiskSnapshots(transaction, now);
       });
       return task;
     });
@@ -83,10 +176,11 @@ class SqliteTaskRepository implements TaskRepository {
       final db = await _appDatabase.database;
       return db.transaction((transaction) async {
         final current = await _findRequired(transaction, task.id);
-        if (current.status != task.status) {
+        if (current.status != TaskStatus.active ||
+            current.status != task.status) {
           throw const AppFailure(
             code: 'VALIDATION_FAILED',
-            message: 'Status changes must use transitionTask.',
+            message: 'Only active tasks can be edited.',
           );
         }
         if (current.version != task.version) {
@@ -120,6 +214,7 @@ class SqliteTaskRepository implements TaskRepository {
           occurredAt: updated.updatedAt,
           metadata: {'version': updated.version},
         );
+        await _refreshRiskSnapshots(transaction, updated.updatedAt);
         return updated;
       });
     });
@@ -132,25 +227,33 @@ class SqliteTaskRepository implements TaskRepository {
       return db.transaction((transaction) async {
         final current = await _findRequired(transaction, id);
         if (current.status == target) return current;
-        if (!_canTransition(current.status, target)) {
+        final now = _clock.now();
+        final effectiveTarget =
+            current.status == TaskStatus.active &&
+                target == TaskStatus.completed &&
+                !now.isBefore(current.dueAt)
+            ? TaskStatus.overdueReview
+            : target;
+        if (!_canTransition(current.status, effectiveTarget) ||
+            (effectiveTarget == TaskStatus.overdueReview &&
+                now.isBefore(current.dueAt))) {
           throw const AppFailure(
             code: 'VALIDATION_FAILED',
             message: 'Task status transition is not allowed.',
           );
         }
 
-        final now = _clock.now();
         final isCompleted =
-            target == TaskStatus.completed ||
-            target == TaskStatus.completedLate;
+            effectiveTarget == TaskStatus.completed ||
+            effectiveTarget == TaskStatus.completedLate;
         final updated = current.copyWith(
-          status: target,
+          status: effectiveTarget,
           completedAt: isCompleted ? now : current.completedAt,
           updatedAt: now,
           version: current.version + 1,
         );
         final row = _taskToRow(updated);
-        row['archived_at'] = target == TaskStatus.archived
+        row['archived_at'] = effectiveTarget == TaskStatus.archived
             ? _toUtcMilliseconds(now)
             : null;
 
@@ -169,13 +272,14 @@ class SqliteTaskRepository implements TaskRepository {
         await _insertEvent(
           transaction,
           taskId: id,
-          eventType: _eventTypeFor(target),
+          eventType: _eventTypeFor(effectiveTarget),
           occurredAt: now,
           metadata: {
             'from': _statusToDatabase(current.status),
-            'to': _statusToDatabase(target),
+            'to': _statusToDatabase(effectiveTarget),
           },
         );
+        await _refreshRiskSnapshots(transaction, now);
         return updated;
       });
     });
@@ -198,8 +302,53 @@ class SqliteTaskRepository implements TaskRepository {
             message: 'Task does not exist.',
           );
         }
+        await _refreshRiskSnapshots(transaction, _clock.now());
       });
     });
+  }
+
+  Future<void> _refreshRiskSnapshots(
+    Transaction transaction,
+    DateTime asOf,
+  ) async {
+    final rows = await transaction.query('tasks');
+    final tasks = rows.map(_taskFromRow).toList();
+    final history = await transaction.rawQuery('''
+      SELECT t.category_id AS category,
+        SUM(CASE WHEN e.event_type = 'TASK_MISSED' THEN 1 ELSE 0 END) AS missed,
+        COUNT(*) AS settled
+      FROM task_events e JOIN tasks t ON t.id = e.task_id
+      WHERE e.event_type IN ('TASK_MISSED', 'TASK_COMPLETED', 'TASK_COMPLETED_LATE')
+      GROUP BY t.category_id
+    ''');
+    final rates = {
+      for (final row in history)
+        _categoryFromDatabase(row['category']! as String):
+            (row['missed']! as int) / (row['settled']! as int),
+    };
+    for (final task in tasks) {
+      final score = RiskEngine.assess(
+        task,
+        asOf,
+        tasks,
+        missedRate: rates[task.category] ?? 0,
+      ).score;
+      await transaction.update(
+        'tasks',
+        {
+          'risk_score_snapshot': score,
+          'risk_config_version': riskConfigVersion,
+        },
+        where: 'id = ?',
+        whereArgs: [task.id],
+      );
+    }
+    await transaction.update(
+      'app_meta',
+      {'value': riskConfigVersion.toString()},
+      where: 'key = ?',
+      whereArgs: ['risk_config_version'],
+    );
   }
 
   Future<TaskItem> _findRequired(DatabaseExecutor executor, String id) async {
@@ -250,7 +399,9 @@ class SqliteTaskRepository implements TaskRepository {
       'archived_at': task.status == TaskStatus.archived
           ? _toUtcMilliseconds(task.updatedAt)
           : null,
-      'risk_score_snapshot': task.riskScoreAt(_clock.now()),
+      'risk_score_snapshot': RiskEngine.assess(task, _clock.now(), [
+        task,
+      ]).score,
       'risk_config_version': riskConfigVersion,
       'version': task.version,
       'created_at': _toUtcMilliseconds(task.createdAt),
@@ -355,9 +506,9 @@ class SqliteTaskRepository implements TaskRepository {
   static void _validateDraft(TaskDraft draft) {
     final titleLength = draft.title.trim().length;
     if (titleLength < 1 ||
-        titleLength > 60 ||
+        titleLength > taskTitleMaxLength ||
         draft.estimatedMinutes <= 0 ||
-        draft.notes.length > 300) {
+        draft.notes.length > taskNotesMaxLength) {
       throw const AppFailure(
         code: 'VALIDATION_FAILED',
         message: 'Task fields are invalid.',

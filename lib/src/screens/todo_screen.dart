@@ -105,16 +105,26 @@ class TodoScreen extends StatelessWidget {
                 child: TaskCard(
                   task: task,
                   now: controller.now,
+                  risk: controller.riskFor(task).score,
                   onTap: () => onTaskTap(task.id),
                   onComplete: task.isDone
                       ? null
-                      : () => controller.completeTask(task.id),
+                      : () => _complete(context, task.id),
                 ),
               ),
             ),
         ],
       ),
     );
+  }
+
+  Future<void> _complete(BuildContext context, String id) async {
+    final completed = await controller.completeTask(id);
+    if (!context.mounted || completed) return;
+    controller.setNavigationIndex(2);
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('任务已到期，请在忏悔录选择结案方式。')));
   }
 }
 

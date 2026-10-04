@@ -1,8 +1,8 @@
 # DDL 生存指南接口文档
 
-> 文档版本：1.2
-> 更新时间：2026-09-18
-> 当前实现阶段：Flutter 前端与 SQLite 任务数据层
+> 文档版本：1.3
+> 更新时间：2026-10-05
+> 当前实现阶段：SQLite 提醒计划与 Android/iOS 本地通知适配（待真机验收）
 > 适用平台：Android、iOS
 
 ## 1. 文档范围
@@ -62,6 +62,7 @@ flowchart LR
 正式实现统一映射为 `AppFailure`：
 
 - `TASK_NOT_FOUND`：任务不存在或已经删除。
+- `REMINDER_NOT_FOUND`：提醒记录不存在或已经删除。
 - `VALIDATION_FAILED`：字段、状态流转或导入内容不合法。
 - `DATABASE_UNAVAILABLE`：数据库无法打开或连接失效。
 - `MIGRATION_FAILED`：Schema 升级失败并已回滚。
@@ -82,14 +83,14 @@ flowchart LR
 `TaskItem` 字段：
 
 - `id: String`：稳定任务标识。
-- `title: String`：1 至 60 个字符。
-- `dueAt: DateTime`：截止时间。
+- `title: String`：1 至 80 个字符。
+- `dueAt: DateTime`：截止时间，用户输入精确到分钟。
 - `category: TaskCategory`：`study`、`work`、`life`、`fun`。
 - `isImportant: bool`：用户设置的重要度。
 - `estimatedMinutes: int`：预计耗时，必须大于 0。
 - `status: TaskStatus`：任务状态。
 - `createdAt: DateTime`：创建时间。
-- `notes: String`：可选备注，最多 300 个字符。
+- `notes: String`：可选备注，最多 1000 个字符。
 - `completedAt: DateTime?`：完成或逾期完成时间。
 
 `TaskStatus`：
@@ -106,6 +107,7 @@ flowchart LR
 - `active -> completed | overdueReview | archived`。
 - `overdueReview -> missed | completedLate`。
 - 已终态任务不得直接回到 `active`；后续“重新立约”创建新任务。
+- 当 `now >= dueAt` 时，未完成任务先进入 `overdueReview`；此时提交普通完成也按逾期待处理处理，不得直接记为 `completed`。
 
 ## 5. TaskRepository
 
@@ -114,13 +116,18 @@ flowchart LR
 ```dart
 abstract interface class TaskRepository {
   Future<List<TaskItem>> listTasks();
+  Future<int> reconcileOverdue(DateTime asOf);
   Future<TaskItem?> getTask(String id);
   Future<TaskItem> createTask(TaskDraft draft);
   Future<TaskItem> updateTask(TaskItem task);
   Future<TaskItem> transitionTask(String id, TaskStatus target);
   Future<void> deleteTask(String id);
+  Future<Map<TaskCategory, double>> missedRatesByCategory();
+  Future<bool> hasMeaningfulHistory(String id);
 }
 ```
+
+`reconcileOverdue(asOf)` 在单一事务内把 `dueAt <= asOf` 的未完成任务转为 `overdueReview` 并各写入一条 `TASK_OVERDUE` 事件；返回转换数量。重复调用不新增事件或版本变化，已完成/已结案/已归档任务不受影响。
 
 ### 5.1 `listTasks`
 
@@ -144,6 +151,7 @@ abstract interface class TaskRepository {
 
 - 使用乐观版本号防止旧页面覆盖新数据；SQLite 阶段给 `TaskItem` 增加 `version`。
 - 截止时间、重要度或预计耗时变化后，Use Case 必须重新计算风险和通知。
+- 首轮只允许编辑进行中任务；逾期待结案、已完成、已错过和已归档任务不可编辑，避免通过修改截止时间绕过结案。编辑全部用户输入字段，并记录 `TASK_UPDATED`。
 
 ### 5.5 `transitionTask`
 
@@ -154,47 +162,75 @@ abstract interface class TaskRepository {
 ### 5.6 `deleteTask`
 
 - MVP 允许物理删除无历史任务。
-- 已有历史事件的任务优先归档；正式 SQLite 实现由 Use Case 决定调用 `archive` 或 `delete`。
+- “有历史”指除 `TASK_CREATED` 外存在 `TASK_UPDATED`、逾期或结案等事件；仅创建事件的进行中任务可物理删除。
+- `hasMeaningfulHistory` 供 Use Case 选择归档或删除；已结案任务即使缺少事件也保守归档，`overdueReview` 必须先结案。归档任务不可再次删除；二次确认文案应告知实际结果。
 - 删除成功后必须取消对应平台通知。
+
+### 5.7 `missedRatesByCategory`
+
+- 按当前仍存在的同类任务的结案事件计算 `TASK_MISSED / (TASK_MISSED + TASK_COMPLETED + TASK_COMPLETED_LATE)`；归档保留事件并参与统计，未结案任务不参与。无结案记录时返回 0。
+- 风险分展示和排序使用相同的纯 Dart 规则；SQLite 的风险快照是可再生缓存，不作为业务真值。
 
 ## 6. NotificationPort
 
 ```dart
 abstract interface class NotificationPort {
+  Future<NotificationCapabilities> inspect();
   Future<bool> requestPermission();
-  Future<void> replaceTaskReminders(String taskId, List<ReminderPlan> plans);
-  Future<void> cancelTaskReminders(String taskId);
-  Future<void> reconcile(List<ReminderPlan> expected);
+  Future<bool> requestExactPermission();
+  Future<bool> openSettings();
+  Future<String> deviceTimezone();
+  Future<Set<int>> pendingIds();
+  Future<void> schedule({
+    required int id,
+    required DateTime fireAt,
+    required ReminderChannel channel,
+    required String taskId,
+    required bool exact,
+  });
+  Future<void> cancel(int id);
+  Stream<String> get selectedTaskIds;
+  String? takeInitialTaskId();
 }
 ```
 
-`ReminderPlan` 字段：
-
-- `taskId`：所属任务。
-- `notificationId`：稳定业务通知 ID。
-- `fireAt`：触发时间。
-- `title`：通知标题，不包含备注。
-- `body`：通知正文，遵守锁屏隐私设置。
+`NotificationCapabilities` 提供通知授权、精确排程能力、是否需要特殊权限和平台待处理数量上限。`ReminderRecord.id` 是稳定业务 ID；`platformNotificationIdFor` 将其转换为正整数平台 ID，并写回 SQLite 的 `platform_notification_id`。
 
 行为约定：
 
-- `replaceTaskReminders` 是替换语义：先取消该任务旧计划，再排程新计划。
+- `ReminderCoordinator` 先把任务与偏好转换为 SQLite 期望记录；`PlatformReminderCoordinator` 再对比平台待处理 ID，取消过期/不再需要的通知并补排未来记录。
+- DDL 定时提醒的目标时间精确到分钟；Android 有精确提醒权限时使用精确排程，权限缺失时的非精确降级必须明确标示，不能承诺指定分钟送达。
 - 已完成、未完成结案、归档和删除任务的计划必须全部取消。
-- `reconcile` 以 SQLite 中的 Reminder 为期望状态，以系统待处理通知为实际状态，修复差异。
+- 启动、恢复前台、任务与偏好变化时调用协调；设备时区通过插件识别并保存为 IANA 标识，变化时强制重新排程。Android 重启由插件广播接收器恢复。后台系统时间/时区广播尚未单独接入，应用下次启动或恢复前台时修复。
 - 通知排程不属于 SQLite 事务；数据库提交成功但排程失败时记录 `SCHEDULE_FAILED`，下次启动重试。
-- 权限拒绝不是崩溃条件，页面显示能力降级和系统设置入口。
+- 冷启动不主动请求权限；用户开启提醒或点击授权入口时才请求。拒绝后记录 `NOTIFICATION_PERMISSION_DENIED`，页面展示能力降级和系统设置入口。通知点按 payload 为任务 ID，不含标题/备注。
 
 Android Adapter：
 
 - 管理 `ddl_critical` 与 `ddl_normal` NotificationChannel。
 - 检查 `POST_NOTIFICATIONS` 与精确提醒权限。
-- 支持非精确提醒降级、开机恢复和 OPPO/vivo 后台设置引导。
+- 支持非精确提醒降级、降级状态提示、开机恢复和 OPPO/vivo 后台设置引导。
 
 iOS Adapter：
 
 - 使用 UserNotifications 权限与系统排程。
 - 只保留触发时间最近的最多 60 个通知，为系统 64 个待处理通知限制预留空间。
 - 应用启动、恢复前台和任务变化时滚动补充排程窗口。
+
+## 6.1 本地设置、资料与提醒记录 Repository（2026-10-04 批次）
+
+- `PreferenceRepository.getOrCreate()` 返回持久化的单例配置；首次为空时事务内写入默认值。`save(value)` 验证通知开关、文案强度、免打扰分钟、提醒提前分钟列表、紧急阈值、缓冲分钟和 IANA 时区标识，返回完整配置。默认免打扰 23:00—07:30，提前量 1440/180 分钟，紧急阈值 60 分钟，缓冲 60 分钟；接入平台通知后会在启动/恢复前台同步设备 IANA 时区。
+- `ProfileRepository.getOrCreate()` 和 `save(value)` 持久化昵称、签名及可选头像 URI；编辑资料只写本地 SQLite，不引入账号。
+- `ReminderRepository.listForTask(taskId)`、`listOutstanding()`、`replaceForTask(taskId, records)`、`syncPlanForTask(taskId, desired)`、`updateStatus(id, status, platformNotificationId?, lastErrorCode?)`、`cancelForTask(taskId)` 仅维护 SQLite 排程记录。`syncPlanForTask` 在事务中增补新目标、取消不再需要的待处理记录，保留已触发/取消及排程失败的历史；同一目标重复调用返回 0 变更。系统通知由独立平台协调器在事务提交后处理，不把 `PENDING` 记录误称为已排程或送达。
+- 这些接口在 Web 预览使用内存实现，Android/iOS 生产入口注入 SQLite 实现；页面不得直接读写数据库。
+
+## 6.2 提醒计划协调（2026-10-04 批次）
+
+- `ReminderPlanner.plan(task, preferences, now, allTasks, missedRate)` 只处理进行中且未到期、通知偏好开启的任务。默认按截止前 1440/180 分钟生成目标；预计耗时超过 180 分钟时额外生成“预计耗时 + 缓冲分钟”的提前目标；在偏好定义的紧急阈值（默认截止前一小时）的投影风险为“极高”时增加紧急目标。用户修改默认提前量后使用其保存的分钟列表。
+- 候选时间按设备本地分钟处理；落在免打扰时段时顺延至该时段结束，若顺延后不早于截止时间则舍弃；过去目标舍弃，同一分钟去重并优先保留紧急渠道。相同任务版本、目标分钟和渠道生成稳定业务 ID。
+- `ReminderCoordinator.reconcile(tasks, preferences, now, missedRates)` 对当前任务投影执行增量对账。创建/编辑/结案/归档/删除、偏好变更、冷启动、恢复前台及前台定时复核均会触发；终态或关闭通知时取消未完成计划。SQLite 记录保留历史状态，数据库重开后重复对账不产生新行。
+- 协调异常不阻断任务页面；`AppController.reminderSyncErrorCode` 在设置页提示稳定错误码，下次启动、恢复前台或任务变更时重试。已存在的 `SCHEDULE_FAILED` 记录不会被无差异对账覆盖，平台 Adapter 可重试。
+- 2026-10-05 已接入 `FlutterNotificationPort`：Android/iOS 本地排程、平台差异修复、权限检查与用户主动申请、精确权限缺失时非精确降级、点击进入任务详情、设备 IANA 时区识别及前台恢复协调。自动化测试和 Android Debug APK 构建通过；vivo V2362A 的权限界面、精确送达和点按已做对照回归，原智能控制后台耗电模式未送达、临时允许后台高耗电后送达。手机已恢复原设置；OPPO/iPhone 和系统重启仍未真机验收。
 
 ## 7. FilePort
 
@@ -238,18 +274,19 @@ abstract interface class InstallationStore {
 
 当前 `AppController` 提供页面可调用的 Use Case 入口：
 
-- `load()`：加载任务并刷新所有派生视图。
+- `load()`：先协调逾期，再加载任务并刷新所有派生视图。
+- `refreshOverdue()`：应用回到前台或前台计时到点时协调逾期并刷新投影。
 - `addTask(draft)`：创建任务。
-- `completeTask(id)`：进入 `completed`。
+- `completeTask(id)`：未到期进入 `completed`；若已到期则进入 `overdueReview` 并返回需去忏悔录处理的结果。
 - `completeLate(id)`：从忏悔录进入 `completedLate`。
 - `markMissed(id)`：从忏悔录进入 `missed`。
 - `archiveTask(id)`：归档。
 - `deleteTask(id)`：删除。
 - `setNavigationIndex(index)`：切换主导航。
 - `setQuadrant(quadrant)`、`setTodoScope(scope)`：更新待办筛选。
-- `setNotificationsEnabled(value)`、`setCopyTone(tone)`：更新当前设置页面状态。
+- `setNotificationsEnabled(value)`、`setCopyTone(tone)`、`setQuietHours(start, end)`、`setDefaultReminderOffsets(offsets)`、`saveProfile(nickname, motto)`：验证并持久化本地设置或资料，成功后更新页面状态。
 
-当前设置项仍为前端内存状态；接入 SQLite 时新增 `PreferenceRepository`，页面调用方式保持不变。
+Android/iOS 生产环境已注入 SQLite `PreferenceRepository`、`ProfileRepository`、`ReminderRepository` 与 `FlutterNotificationPort`；Web 预览及 Widget 测试使用内存实现。通知开关会生成/取消本机计划，并在平台授权后同步本地通知；非精确降级不承诺指定分钟送达。
 
 ## 11. JSON 导出协议
 
@@ -282,7 +319,7 @@ abstract interface class InstallationStore {
 - `AppDatabase`：已实现数据库 v1 建库、默认分类、索引、外键和前向迁移入口。
 - `SharedPreferencesInstallationStore`：已实现，持久保存首次启动日期。
 - `InMemoryInstallationStore`：已实现，供单元测试和 Widget 测试使用。
-- `NotificationPort`：契约已定义，Android/iOS Adapter 未实现。
+- `NotificationPort`：契约及 Android/iOS 共用插件 Adapter 已实现，真机送达与系统限制仍待验收。
 - `FilePort`：契约已定义，Android/iOS Adapter 未实现。
 - `ClockPort`：已提供 `SystemClock`，Controller 与 Repository 均支持测试时注入。
 

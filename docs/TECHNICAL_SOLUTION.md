@@ -171,6 +171,7 @@ DDL/
 - 生产数据库禁止通过“删除后重建”完成升级。
 - 自动化测试至少覆盖从上一个正式版本升级到当前版本。
 - 迁移失败时保留原数据库，记录不含任务正文的诊断信息，并阻止继续写入。
+- v2 将任务标题上限由 60 调整为 80 个字符、备注上限由 300 调整为 1000 个字符；升级须在单一事务内重建 `tasks` 约束并保留任务、事件和提醒记录，通过真实 v1 数据库升级测试验证。
 
 ### 6.3 事务边界
 
@@ -184,6 +185,8 @@ DDL/
 - JSON 导入与导入版本记录。
 
 系统通知不是 SQLite 事务的一部分。数据库事务成功后再排程通知；若通知排程失败，将 Reminder 标记为 `SCHEDULE_FAILED`，由启动或恢复前台时的协调任务重试。
+
+任务逾期协调由 Repository 接收统一时钟的 `asOf`，在一个 SQLite 事务中只更新 `PENDING AND due_at <= asOf` 的任务，并为每个转换写入 `TASK_OVERDUE`。应用启动、恢复前台及前台最近截止时间到达时调用；前台使用单一定时器，最多每分钟复核一次，以处理设备时间变化。重复协调不得重复写事件；应用不运行时不承诺后台即时转换，但恢复前台后应立即完成。
 
 ### 6.4 索引策略
 
@@ -202,12 +205,12 @@ MVP 数据量较小，不引入全文搜索。任务数量或备注规模达到�
 ### 7.1 `tasks`
 
 - `id TEXT PRIMARY KEY`：UUID。
-- `title TEXT NOT NULL`。
+- `title TEXT NOT NULL`：1 至 80 个字符。
 - `category_id TEXT NOT NULL`。
 - `important INTEGER NOT NULL`：0 或 1。
 - `due_at INTEGER NOT NULL`：UTC 毫秒时间戳。
 - `estimated_minutes INTEGER NOT NULL`。
-- `notes TEXT`。
+- `notes TEXT`：最多 1000 个字符；现有实现以空字符串表示未填写。
 - `status TEXT NOT NULL`。
 - `completed_at INTEGER`。
 - `archived_at INTEGER`。
@@ -292,8 +295,10 @@ MVP 数据量较小，不引入全文搜索。任务数量或备注规模达到�
 - `TaskRepository.archive(id)`。
 - `TaskRepository.delete(id)`。
 - `TaskEventRepository.append(event)`。
-- `ReminderRepository.replaceForTask(taskId, reminders)`。
-- `PreferenceRepository.get()` / `save()`。
+- `PreferenceRepository.getOrCreate()` / `save()`。
+- `ProfileRepository.getOrCreate()` / `save()`。
+- `ReminderRepository.listForTask()` / `listOutstanding()` / `replaceForTask()` / `updateStatus()` / `cancelForTask()`。
+- 上述已实现的数据访问均在应用内 SQLite 中完成；`preferences` 与 `profile` 使用 `id=1` 的单例记录，提醒替换与状态变更使用事务。提醒记录经 `PlatformReminderCoordinator` 接入系统本地通知；vivo 的对照验证显示实际送达依赖后台耗电设置，其他机型与场景仍待验收。
 - `DataPort.export()` / `validateImport()` / `import()`。
 
 Repository 返回领域对象，不把 SQLite 行格式泄露到页面。所有异常映射为稳定错误类型，例如 `DATABASE_UNAVAILABLE`、`VALIDATION_FAILED`、`MIGRATION_FAILED` 和 `STORAGE_FULL`。
@@ -321,6 +326,10 @@ Repository 返回领域对象，不把 SQLite 行格式泄露到页面。所有�
 
 ### 9.3 执行策略
 
+首轮固定风险参数（配置版本 2）：时间压力按剩余分钟分段为 45/42/36/29/22/13/5 分；重要任务加 20 分；工作量冲突为 `round(min(estimatedMinutes / max(remainingMinutes, 1) * 30, 15))`；同一任务前后 24 小时内每个其他进行中 DDL 加 2 分、最高 10 分；同类已结案任务的错过率乘 10 四舍五入、最高 10 分。已完成、错过和归档任务风险为 0。每项都输出原因代码、分数和解释，0 分因素也显示；下一重算点取分钟边界、最晚开始时间及下一时间压力档位中的最近未来时刻。首轮参数随 App 版本发布，未实现远程下发。
+
+象限紧急判定除原有“当前时间达到 `dueAt - (estimatedMinutes + 60 分钟)`”外，还在目标 DDL 前 24 小时累计其他进行中任务的预计耗时；若目标自身与这些任务所需分钟数不小于剩余分钟数，也视为紧急。详情、列表筛选和计数统一使用风险引擎的象限输出。
+
 - 风险算法实现为纯 Dart 函数，相同输入必须得到相同输出。
 - 创建、编辑、状态流转、应用启动、恢复前台和时区变化时触发重算。
 - 首页可见期间使用单一时钟源刷新倒计时，不为每张卡片创建定时器。
@@ -331,19 +340,22 @@ Repository 返回领域对象，不把 SQLite 行格式泄露到页面。所有�
 
 ### 10.1 本地排程
 
+- 所有 DDL 定时提醒以用户选择的分钟为目标粒度；计划时间按分钟保存和展示，不把非精确排程标记为“准点”。
 - 任务保存成功后，根据用户设置生成提醒计划并写入 `reminders`。
 - 数据库事务成功后，通过 `NotificationPort` 排程；优先使用 `flutter_local_notifications`，插件缺口由 Kotlin/Swift Adapter 补齐。
 - 任务完成、错过、归档、删除或修改截止时间时，取消旧通知后重新排程。
 - 应用启动、恢复前台、设备重启或系统时间、时区变化后执行提醒协调；iOS 在每次启动和恢复前台时补充未来排程窗口。
 - 协调过程以 SQLite 中的 Reminder 为期望状态，以当前平台待处理通知为实际状态，修复差异。
+- 截至 2026-10-04，已实现共享 Dart `ReminderPlanner` 与 `ReminderCoordinator`：默认截止前 24 小时/3 小时、长任务的预计耗时加缓冲提前点、投影极高风险任务的截止前 1 小时目标；免打扰顺延、分钟去重、过期舍弃、SQLite 幂等增量对账、终态取消、失败状态保留、冷启动和前台恢复协调均有测试。协调失败记录稳定错误码，不阻断任务页面，并在后续协调重试。
+- 2026-10-05 已接入 `FlutterNotificationPort` 和平台对账：SQLite 仍是期望状态，Android/iOS 待处理通知是实际状态；启动、恢复前台及任务/偏好变化时修复差异。设备 IANA 时区同步至偏好并触发重排；Android 重启/应用更新由插件广播接收器恢复。系统时间/时区在应用下一次恢复前台时修复，后台广播即时修复尚未实现。vivo V2362A 真机验证：原“智能控制后台耗电”模式下精确闹钟退后台后被冻结且未送达；临时改为“允许后台高耗电”后目标分钟送达并可点按，测试后已恢复原设置。OPPO/iPhone、锁屏和重启仍待验收；不把排程成功等同于准点送达。
 
 ### 10.2 权限
 
 - Android 13 及以上需要 `POST_NOTIFICATIONS`。
 - 只有用户主动开启 DDL 提醒时才请求通知权限。
-- Android 12 及以上如需准点提醒，先检查 `canScheduleExactAlarms()`。
+- Android 12 及以上为实现分钟级目标，排程前检查 `canScheduleExactAlarms()`。
 - 精确提醒优先使用 `SCHEDULE_EXACT_ALARM` 并由用户授权；不默认使用受商店政策严格限制的 `USE_EXACT_ALARM`。
-- 用户拒绝精确提醒后降级为非精确提醒，并在设置页说明可能存在时间浮动。
+- 用户拒绝精确提醒后可降级为非精确提醒，但必须显著说明无法保证指定分钟送达，并提供权限修复入口；不得将降级状态显示为“精确提醒已开启”。
 - iOS 在用户主动开启提醒后请求 UserNotifications 权限；拒绝后只提供系统设置入口，不重复弹窗。
 - 应用不能绕过勿扰模式、锁屏隐私和用户关闭通知的选择。
 
@@ -359,7 +371,7 @@ Repository 返回领域对象，不把 SQLite 行格式泄露到页面。所有�
 - 用户强行停止应用后，Android 可能阻止提醒和广播，直到用户再次打开应用。
 - OPPO、vivo 的省电和后台策略因系统版本不同，必须真机验证。
 - 顶部横幅不是应用可以强制保证的效果；它受通知渠道、系统版本、勿扰模式和用户设置控制。
-- 精确提醒属于高影响能力，只有用户明确设定的 DDL 才应使用，避免滥用和耗电。
+- 精确提醒属于高影响能力，只用于用户明确启用的 DDL 定时提醒；权限、系统省电策略和勿扰模式仍可能影响实际送达，需要在真机验证并向用户说明。
 
 ### 10.5 iOS 边界
 
