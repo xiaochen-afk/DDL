@@ -27,6 +27,10 @@ class InMemoryTaskRepository implements TaskRepository {
       createdAt: now,
       updatedAt: now,
       notes: draft.notes,
+      customCategoryLabel: draft.category == TaskCategory.custom
+          ? draft.customCategoryLabel!.trim()
+          : null,
+      taskReminderOffsetMinutes: draft.taskReminderOffsetMinutes,
     );
     _tasks.add(task);
     return task;
@@ -175,6 +179,10 @@ class InMemoryTaskRepository implements TaskRepository {
     _validateTask(task);
     final updated = task.copyWith(
       title: task.title.trim(),
+      customCategoryLabel: task.category == TaskCategory.custom
+          ? task.customCategoryLabel!.trim()
+          : null,
+      clearCustomCategoryLabel: task.category != TaskCategory.custom,
       updatedAt: _clock.now(),
       version: task.version + 1,
     );
@@ -203,7 +211,10 @@ class InMemoryTaskRepository implements TaskRepository {
     if (title.isEmpty ||
         title.length > taskTitleMaxLength ||
         draft.estimatedMinutes <= 0 ||
-        draft.notes.length > taskNotesMaxLength) {
+        draft.notes.length > taskNotesMaxLength ||
+        !_hasValidCustomCategory(draft) ||
+        (draft.taskReminderOffsetMinutes != null &&
+            draft.taskReminderOffsetMinutes! <= 0)) {
       throw const AppFailure(
         code: 'VALIDATION_FAILED',
         message: 'Task fields are invalid.',
@@ -220,7 +231,17 @@ class InMemoryTaskRepository implements TaskRepository {
         isImportant: task.isImportant,
         estimatedMinutes: task.estimatedMinutes,
         notes: task.notes,
+        customCategoryLabel: task.customCategoryLabel,
+        taskReminderOffsetMinutes: task.taskReminderOffsetMinutes,
       ),
     );
+  }
+
+  static bool _hasValidCustomCategory(TaskDraft draft) {
+    final label = draft.customCategoryLabel?.trim() ?? '';
+    if (draft.category == TaskCategory.custom) {
+      return label.isNotEmpty && label.length <= taskCustomCategoryMaxLength;
+    }
+    return label.isEmpty;
   }
 }

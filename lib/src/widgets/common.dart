@@ -235,7 +235,7 @@ class TaskCard extends StatelessWidget {
                   runSpacing: 6,
                   children: [
                     StatusStamp(
-                      label: task.category.label,
+                      label: task.categoryLabel,
                       color: AppColors.inkSoft,
                     ),
                     if (!task.isDone)

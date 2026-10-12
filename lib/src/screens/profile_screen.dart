@@ -1,9 +1,36 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+
+import 'reminder_duration_picker_dialog.dart';
 
 import '../state/app_controller.dart';
 import '../theme/app_theme.dart';
 import '../widgets/common.dart';
+
+const _reminderOffsetPresets = <int>[
+  1,
+  2,
+  3,
+  5,
+  10,
+  15,
+  30,
+  60,
+  120,
+  180,
+  360,
+  720,
+  1440,
+  2880,
+  4320,
+  10080,
+];
+
+String _reminderOffsetLabel(int minutes) {
+  if (minutes == 0) return '不设置';
+  if (minutes % 1440 == 0) return '${minutes ~/ 1440} 天前';
+  if (minutes % 60 == 0) return '${minutes ~/ 60} 小时前';
+  return '$minutes 分钟前';
+}
 
 class ProfileScreen extends StatelessWidget {
   const ProfileScreen({super.key, required this.controller});
@@ -175,11 +202,7 @@ class ProfileScreen extends StatelessWidget {
                   title: const Text('默认提前提醒'),
                   subtitle: Text(
                     controller.preferences.defaultReminderOffsetsMinutes
-                        .map(
-                          (minutes) => minutes >= 60 && minutes % 60 == 0
-                              ? '${minutes ~/ 60} 小时'
-                              : '$minutes 分钟',
-                        )
+                        .map(formatReminderDuration)
                         .join('、'),
                   ),
                   trailing: const Icon(Icons.chevron_right_rounded),
@@ -343,44 +366,10 @@ class ProfileScreen extends StatelessWidget {
   }
 
   Future<void> _editReminderOffsets(BuildContext context) async {
-    var input = controller.preferences.defaultReminderOffsetsMinutes.join(',');
     final offsets = await showDialog<List<int>>(
       context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('默认提前提醒'),
-        content: TextFormField(
-          initialValue: input,
-          onChanged: (value) => input = value,
-          keyboardType: TextInputType.text,
-          inputFormatters: [
-            FilteringTextInputFormatter.allow(RegExp(r'[0-9,， ]')),
-          ],
-          decoration: const InputDecoration(
-            labelText: '提前分钟数，以逗号分隔',
-            helperText: '例如 1440,180 代表提前 24 小时和 3 小时',
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () {
-              final parsed = input
-                  .replaceAll('，', ',')
-                  .split(',')
-                  .map((part) => int.tryParse(part.trim()))
-                  .toList();
-              if (parsed.isEmpty ||
-                  parsed.any((value) => value == null || value <= 0)) {
-                return;
-              }
-              Navigator.pop(dialogContext, parsed.cast<int>());
-            },
-            child: const Text('保存'),
-          ),
-        ],
+      builder: (_) => ReminderDurationPickerDialog(
+        initialOffsets: controller.preferences.defaultReminderOffsetsMinutes,
       ),
     );
     if (offsets != null && context.mounted) {
@@ -431,6 +420,239 @@ class ProfileScreen extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+// Kept temporarily for compatibility with the previous picker implementation.
+// ignore: unused_element
+class _ReminderOffsetPickerDialog extends StatefulWidget {
+  const _ReminderOffsetPickerDialog({required this.initialOffsets});
+
+  final List<int> initialOffsets;
+
+  @override
+  State<_ReminderOffsetPickerDialog> createState() =>
+      _ReminderOffsetPickerDialogState();
+}
+
+class _ReminderOffsetPickerDialogState
+    extends State<_ReminderOffsetPickerDialog> {
+  late final List<int> _firstOptions;
+  late final List<int> _secondOptions;
+  late final FixedExtentScrollController _firstController;
+  late final FixedExtentScrollController _secondController;
+  late int _firstOffset;
+  late int _secondOffset;
+
+  @override
+  void initState() {
+    super.initState();
+    final existing = widget.initialOffsets.where((value) => value > 0).toList();
+    _firstOffset = existing.isEmpty ? 1440 : existing.first;
+    _secondOffset = existing.length > 1 ? existing[1] : 0;
+    final values = <int>{..._reminderOffsetPresets, ...existing}.toList()
+      ..sort();
+    _firstOptions = List.unmodifiable(values);
+    _secondOptions = List.unmodifiable([0, ...values]);
+    _firstController = FixedExtentScrollController(
+      initialItem: _firstOptions.indexOf(_firstOffset),
+    );
+    _secondController = FixedExtentScrollController(
+      initialItem: _secondOptions.indexOf(_secondOffset),
+    );
+  }
+
+  @override
+  void dispose() {
+    _firstController.dispose();
+    _secondController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      key: const Key('reminder_offset_picker_dialog'),
+      insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 420),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(22, 22, 22, 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 48,
+                height: 48,
+                decoration: BoxDecoration(
+                  color: AppColors.orange.withValues(alpha: 0.12),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(
+                  Icons.alarm_add_rounded,
+                  color: AppColors.orangeDark,
+                ),
+              ),
+              const SizedBox(height: 12),
+              Text('默认提前提醒', style: Theme.of(context).textTheme.headlineSmall),
+              const SizedBox(height: 5),
+              Text(
+                '上下滑动选择，每个任务默认最多提醒两次',
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+              const SizedBox(height: 18),
+              Row(
+                children: [
+                  Expanded(
+                    child: _ReminderWheel(
+                      key: const Key('reminder_offset_wheel_0'),
+                      title: '提醒一',
+                      options: _firstOptions,
+                      selected: _firstOffset,
+                      controller: _firstController,
+                      onChanged: (value) =>
+                          setState(() => _firstOffset = value),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: _ReminderWheel(
+                      key: const Key('reminder_offset_wheel_1'),
+                      title: '提醒二·可选',
+                      options: _secondOptions,
+                      selected: _secondOffset,
+                      controller: _secondController,
+                      onChanged: (value) =>
+                          setState(() => _secondOffset = value),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              Text(
+                '右列可选“不设置”；相同时间会自动合并。',
+                style: Theme.of(context).textTheme.labelSmall,
+              ),
+              const SizedBox(height: 18),
+              SizedBox(
+                width: double.infinity,
+                height: 50,
+                child: FilledButton(
+                  key: const Key('reminder_offsets_save'),
+                  onPressed: () {
+                    final result =
+                        {
+                            _firstOffset,
+                            _secondOffset,
+                          }.where((value) => value > 0).toList()
+                          ..sort((left, right) => right.compareTo(left));
+                    Navigator.pop(context, result);
+                  },
+                  child: const Text('保存设置'),
+                ),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('取消'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ReminderWheel extends StatelessWidget {
+  const _ReminderWheel({
+    super.key,
+    required this.title,
+    required this.options,
+    required this.selected,
+    required this.controller,
+    required this.onChanged,
+  });
+
+  final String title;
+  final List<int> options;
+  final int selected;
+  final FixedExtentScrollController controller;
+  final ValueChanged<int> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      label: title,
+      value: _reminderOffsetLabel(selected),
+      child: Column(
+        children: [
+          Text(
+            title,
+            style: Theme.of(
+              context,
+            ).textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w900),
+          ),
+          const SizedBox(height: 8),
+          Container(
+            height: 190,
+            decoration: BoxDecoration(
+              color: AppColors.paper,
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(color: AppColors.line),
+            ),
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                IgnorePointer(
+                  child: Container(
+                    height: 50,
+                    margin: const EdgeInsets.symmetric(horizontal: 7),
+                    decoration: BoxDecoration(
+                      color: AppColors.orange.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(13),
+                      border: Border.all(
+                        color: AppColors.orange.withValues(alpha: 0.34),
+                      ),
+                    ),
+                  ),
+                ),
+                ListWheelScrollView.useDelegate(
+                  controller: controller,
+                  itemExtent: 50,
+                  diameterRatio: 1.55,
+                  perspective: 0.004,
+                  physics: const FixedExtentScrollPhysics(),
+                  onSelectedItemChanged: (index) => onChanged(options[index]),
+                  childDelegate: ListWheelChildBuilderDelegate(
+                    childCount: options.length,
+                    builder: (context, index) {
+                      final value = options[index];
+                      final isSelected = value == selected;
+                      return Center(
+                        child: Text(
+                          _reminderOffsetLabel(value),
+                          style: Theme.of(context).textTheme.titleMedium
+                              ?.copyWith(
+                                color: isSelected
+                                    ? AppColors.ink
+                                    : AppColors.inkSoft.withValues(alpha: 0.46),
+                                fontWeight: isSelected
+                                    ? FontWeight.w900
+                                    : FontWeight.w600,
+                              ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }

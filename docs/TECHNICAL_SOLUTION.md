@@ -1,13 +1,13 @@
 # DDL 生存指南技术方案
 
-> 文档版本：1.5  
+> 文档版本：1.6
 > 当前目标形态：Android 与 iOS 本地应用，Android 重点适配 OPPO、vivo  
 > 远期目标形态：HarmonyOS，届时允许重写或重新选型  
 > 数据方案：本机 SQLite，无云数据库  
 > 技术选型状态：Flutter + Dart，须通过 Android/iOS 开工前技术 Spike  
 > 对应 PRD：`docs/PRD.md`  
 > 选型决策：`docs/TECH_STACK_DECISION.md`  
-> 更新时间：2026-09-17
+> 更新时间：2026-10-05
 
 ## 1. 技术结论
 
@@ -165,13 +165,15 @@ DDL/
 
 ### 6.2 Schema 版本与迁移
 
-- 使用连续整数作为数据库版本，例如 `1`、`2`、`3`。
+- 使用连续整数作为数据库版本；当前版本为 `4`。
 - 每个版本提供前向迁移脚本和迁移后校验。
 - 迁移必须幂等，或者在执行前检查当前版本。
 - 生产数据库禁止通过“删除后重建”完成升级。
 - 自动化测试至少覆盖从上一个正式版本升级到当前版本。
 - 迁移失败时保留原数据库，记录不含任务正文的诊断信息，并阻止继续写入。
 - v2 将任务标题上限由 60 调整为 80 个字符、备注上限由 300 调整为 1000 个字符；升级须在单一事务内重建 `tasks` 约束并保留任务、事件和提醒记录，通过真实 v1 数据库升级测试验证。
+- v3 为任务表增加可空 `custom_category_label TEXT` 字段，并增加 `custom` 分类占位行。既有任务的新字段保持 `NULL`，v2→v3 迁移不重建任务表、不更改任务状态；当前不引入独立的自定义分类管理后端。
+- v4 为任务表增加可空 `task_reminder_offset_minutes INTEGER` 字段和正数约束；v3→v4 不重建任务表，旧任务保持 `NULL`，旧事件与提醒记录原样保留。
 
 ### 6.3 事务边界
 
@@ -207,6 +209,8 @@ MVP 数据量较小，不引入全文搜索。任务数量或备注规模达到�
 - `id TEXT PRIMARY KEY`：UUID。
 - `title TEXT NOT NULL`：1 至 80 个字符。
 - `category_id TEXT NOT NULL`。
+- `custom_category_label TEXT`：可空，仅 `category_id = 'custom'` 时由前端写入，当前上限 12 个字符。
+- `task_reminder_offset_minutes INTEGER`：v4 新增可空字段；非空为该任务专属默认提醒提前分钟数（大于 0），覆盖全局默认提前量，不改变其他风险/最晚开始提醒；旧任务升级后为 `NULL`，继续使用全局设置。
 - `important INTEGER NOT NULL`：0 或 1。
 - `due_at INTEGER NOT NULL`：UTC 毫秒时间戳。
 - `estimated_minutes INTEGER NOT NULL`。
@@ -241,6 +245,10 @@ MVP 数据量较小，不引入全文搜索。任务数量或备注规模达到�
 - `is_system INTEGER NOT NULL`。
 - `sort_order INTEGER NOT NULL`。
 - `created_at INTEGER NOT NULL`。
+
+`categories` 表仍保留学习、工作、生活、娱乐四个系统分类，v3 增加 `custom` 作为用户输入标签的稳定外键占位。自定义名称随任务保存在 `tasks.custom_category_label`，不在本轮建立可复用标签库。
+
+短截止任务在创建/编辑时，如果全局默认提前提醒点均早于当前时间，则表单开放单任务提醒；未填写时将有效提前量 5 分钟写入该任务，填写时保存选择值。v3→v4 仅 `ALTER TABLE` 添加可空字段，既有任务不被回填；提醒计划只用该字段替换全局默认提前量，仍遵循免打扰、同分钟去重和到期取消。已过的触发点不排程，界面需要明确提示。
 
 ### 7.4 `reminders`
 

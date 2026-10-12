@@ -1,6 +1,6 @@
 import 'package:sqflite/sqflite.dart';
 
-const int databaseVersion = 2;
+const int databaseVersion = 4;
 const int riskConfigVersion = 2;
 
 String _tasksTableSql(String tableName, int titleLimit, int notesLimit) =>
@@ -175,6 +175,16 @@ Future<void> createSchemaV2(Database db) async {
   await _migrateV1ToV2(db);
 }
 
+Future<void> createSchemaV3(Database db) async {
+  await createSchemaV2(db);
+  await _migrateV2ToV3(db);
+}
+
+Future<void> createSchemaV4(Database db) async {
+  await createSchemaV3(db);
+  await _migrateV3ToV4(db);
+}
+
 Future<void> migrateDatabase(
   Database db,
   int oldVersion,
@@ -187,6 +197,12 @@ Future<void> migrateDatabase(
   }
   if (oldVersion < 2 && newVersion >= 2) {
     await _migrateV1ToV2(db);
+  }
+  if (oldVersion < 3 && newVersion >= 3) {
+    await _migrateV2ToV3(db);
+  }
+  if (oldVersion < 4 && newVersion >= 4) {
+    await _migrateV3ToV4(db);
   }
 }
 
@@ -235,6 +251,38 @@ Future<void> _migrateV1ToV2(Database db) async {
   await db.update(
     'app_meta',
     {'value': '2'},
+    where: 'key = ?',
+    whereArgs: ['schema_version'],
+  );
+}
+
+Future<void> _migrateV2ToV3(Database db) async {
+  await db.execute('ALTER TABLE tasks ADD COLUMN custom_category_label TEXT');
+  await db.insert('categories', {
+    'id': 'custom',
+    'name': '自定义',
+    'icon': 'sell',
+    'color_token': 'category.custom',
+    'is_system': 1,
+    'sort_order': 4,
+    'created_at': DateTime.now().toUtc().millisecondsSinceEpoch,
+  });
+  await db.update(
+    'app_meta',
+    {'value': '3'},
+    where: 'key = ?',
+    whereArgs: ['schema_version'],
+  );
+}
+
+Future<void> _migrateV3ToV4(Database db) async {
+  await db.execute(
+    'ALTER TABLE tasks ADD COLUMN task_reminder_offset_minutes '
+    'INTEGER CHECK (task_reminder_offset_minutes > 0)',
+  );
+  await db.update(
+    'app_meta',
+    {'value': '4'},
     where: 'key = ?',
     whereArgs: ['schema_version'],
   );

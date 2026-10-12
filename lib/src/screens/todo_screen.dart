@@ -38,11 +38,14 @@ class TodoScreen extends StatelessWidget {
           ),
           const SizedBox(height: 18),
           GridView.count(
+            key: const Key('todo_quadrant_grid'),
             crossAxisCount: 2,
             crossAxisSpacing: 10,
             mainAxisSpacing: 10,
             childAspectRatio: 1.42,
             shrinkWrap: true,
+            primary: false,
+            padding: EdgeInsets.zero,
             physics: const NeverScrollableScrollPhysics(),
             children: TaskQuadrant.values
                 .map(
@@ -55,8 +58,9 @@ class TodoScreen extends StatelessWidget {
                 )
                 .toList(),
           ),
-          const SizedBox(height: 20),
+          const SizedBox(height: 12),
           SingleChildScrollView(
+            key: const Key('todo_scope_filters'),
             scrollDirection: Axis.horizontal,
             child: Row(
               children: TodoScope.values

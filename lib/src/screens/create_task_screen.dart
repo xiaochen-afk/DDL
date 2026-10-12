@@ -2,9 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../domain/task.dart';
+import '../domain/reminder_planner.dart';
 import '../state/app_controller.dart';
 import '../theme/app_theme.dart';
 import '../widgets/common.dart';
+import 'reminder_duration_picker_dialog.dart';
 
 class CreateTaskScreen extends StatefulWidget {
   const CreateTaskScreen({
@@ -25,10 +27,13 @@ class _CreateTaskScreenState extends State<CreateTaskScreen> {
   final _titleController = TextEditingController();
   final _notesController = TextEditingController();
   final _minutesController = TextEditingController(text: '60');
+  final _customCategoryController = TextEditingController();
+  final _customCategoryFocusNode = FocusNode();
   late DateTime _dueAt;
   TaskCategory _category = TaskCategory.study;
   bool _important = true;
   int _estimatedMinutes = 60;
+  int? _taskReminderOffsetMinutes;
   bool _submitting = false;
 
   @override
@@ -41,8 +46,10 @@ class _CreateTaskScreenState extends State<CreateTaskScreen> {
       _minutesController.text = initial.estimatedMinutes.toString();
       _dueAt = initial.dueAt;
       _category = initial.category;
+      _customCategoryController.text = initial.customCategoryLabel ?? '';
       _important = initial.isImportant;
       _estimatedMinutes = initial.estimatedMinutes;
+      _taskReminderOffsetMinutes = initial.taskReminderOffsetMinutes;
       return;
     }
     final tomorrow = DateTime.now().add(const Duration(days: 1));
@@ -54,16 +61,29 @@ class _CreateTaskScreenState extends State<CreateTaskScreen> {
     _titleController.dispose();
     _notesController.dispose();
     _minutesController.dispose();
+    _customCategoryController.dispose();
+    _customCategoryFocusNode.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    final now = widget.controller.now;
+    final needsTaskReminder = ReminderPlanner.needsTaskReminder(
+      _dueAt,
+      widget.controller.preferences.defaultReminderOffsetsMinutes,
+      now,
+    );
+    final reminderOffset = _taskReminderOffsetMinutes ?? 5;
+    final reminderPoint = _dueAt.subtract(Duration(minutes: reminderOffset));
     final preview = TaskItem(
       id: 'preview',
       title: _titleController.text.isEmpty ? '新任务' : _titleController.text,
       dueAt: _dueAt,
       category: _category,
+      customCategoryLabel: _category == TaskCategory.custom
+          ? _customCategoryController.text.trim()
+          : null,
       isImportant: _important,
       estimatedMinutes: _estimatedMinutes,
       status: TaskStatus.active,
@@ -155,25 +175,59 @@ class _CreateTaskScreenState extends State<CreateTaskScreen> {
                   ],
                 ),
               ),
-              const SizedBox(height: 10),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  ActionChip(
-                    label: const Text('今天 23:00'),
-                    onPressed: () => _setQuickDue(0, 23),
+              if (needsTaskReminder) ...[
+                const SizedBox(height: 16),
+                const _FieldLabel('本任务提醒时间'),
+                const SizedBox(height: 6),
+                Text(
+                  '默认提醒点已过去。此设置只影响本任务，不会修改全局提前提醒。',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+                const SizedBox(height: 8),
+                PaperCard(
+                  onTap: _pickTaskReminder,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 14,
                   ),
-                  ActionChip(
-                    label: const Text('明天 18:00'),
-                    onPressed: () => _setQuickDue(1, 18),
+                  child: Row(
+                    children: [
+                      const Icon(
+                        Icons.notifications_active_outlined,
+                        color: AppColors.orange,
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Text(
+                          _taskReminderOffsetMinutes == null
+                              ? '未单独设置：默认截止前 5 分钟'
+                              : formatReminderDuration(reminderOffset),
+                        ),
+                      ),
+                      const Icon(Icons.chevron_right_rounded),
+                    ],
                   ),
-                  ActionChip(
-                    label: const Text('三天后'),
-                    onPressed: () => _setQuickDue(3, 18),
+                ),
+                if (_taskReminderOffsetMinutes != null)
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: TextButton(
+                      onPressed: () =>
+                          setState(() => _taskReminderOffsetMinutes = null),
+                      child: const Text('恢复默认 5 分钟'),
+                    ),
                   ),
-                ],
-              ),
+                if (!reminderPoint.isAfter(now))
+                  Padding(
+                    padding: const EdgeInsets.only(top: 6),
+                    child: Text(
+                      '该提醒时间已过去，保存后不会补发；请调整截止时间或提醒提前量。',
+                      style: Theme.of(
+                        context,
+                      ).textTheme.bodySmall?.copyWith(color: AppColors.red),
+                    ),
+                  ),
+              ],
               const SizedBox(height: 22),
               const _FieldLabel('重要度', required: true),
               const SizedBox(height: 8),
@@ -222,10 +276,52 @@ class _CreateTaskScreenState extends State<CreateTaskScreen> {
                       (category) => ChoiceChip(
                         label: Text(category.label),
                         selected: _category == category,
-                        onSelected: (_) => setState(() => _category = category),
+                        avatar: category == TaskCategory.custom
+                            ? const Icon(Icons.add_rounded, size: 18)
+                            : null,
+                        onSelected: (_) {
+                          setState(() => _category = category);
+                          if (category == TaskCategory.custom) {
+                            WidgetsBinding.instance.addPostFrameCallback((_) {
+                              if (!mounted) return;
+                              _customCategoryFocusNode.requestFocus();
+                            });
+                          }
+                        },
                       ),
                     )
                     .toList(),
+              ),
+              AnimatedSwitcher(
+                duration: const Duration(milliseconds: 180),
+                child: _category == TaskCategory.custom
+                    ? Padding(
+                        key: const ValueKey('custom_category_input'),
+                        padding: const EdgeInsets.only(top: 10),
+                        child: TextFormField(
+                          key: const Key('custom_category_field'),
+                          controller: _customCategoryController,
+                          focusNode: _customCategoryFocusNode,
+                          textInputAction: TextInputAction.next,
+                          maxLength: taskCustomCategoryMaxLength,
+                          decoration: const InputDecoration(
+                            labelText: '自定义标签',
+                            hintText: '例如：社团、考试、健身',
+                            prefixIcon: Icon(Icons.sell_outlined),
+                          ),
+                          validator: (value) {
+                            if (_category == TaskCategory.custom &&
+                                (value == null || value.trim().isEmpty)) {
+                              return '请输入自定义标签';
+                            }
+                            return null;
+                          },
+                          onChanged: (_) => setState(() {}),
+                        ),
+                      )
+                    : const SizedBox.shrink(
+                        key: ValueKey('custom_category_empty'),
+                      ),
               ),
               const SizedBox(height: 22),
               const _FieldLabel('预计耗时'),
@@ -309,13 +405,6 @@ class _CreateTaskScreenState extends State<CreateTaskScreen> {
     );
   }
 
-  void _setQuickDue(int days, int hour) {
-    final target = DateTime.now().add(Duration(days: days));
-    setState(
-      () => _dueAt = DateTime(target.year, target.month, target.day, hour),
-    );
-  }
-
   Future<void> _pickDateTime() async {
     final date = await showDatePicker(
       context: context,
@@ -343,8 +432,29 @@ class _CreateTaskScreenState extends State<CreateTaskScreen> {
     );
   }
 
+  Future<void> _pickTaskReminder() async {
+    final selected = await showDialog<List<int>>(
+      context: context,
+      builder: (_) => ReminderDurationPickerDialog(
+        title: '本任务提醒时间',
+        initialOffsets: [_taskReminderOffsetMinutes ?? 5],
+      ),
+    );
+    if (selected != null && mounted) {
+      setState(() => _taskReminderOffsetMinutes = selected.single);
+    }
+  }
+
   Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) return;
+    final needsTaskReminder = ReminderPlanner.needsTaskReminder(
+      _dueAt,
+      widget.controller.preferences.defaultReminderOffsetsMinutes,
+      widget.controller.now,
+    );
+    final taskReminderOffsetMinutes = needsTaskReminder
+        ? (_taskReminderOffsetMinutes ?? 5)
+        : null;
     if (_dueAt.isBefore(DateTime.now())) {
       final confirmed = await showDialog<bool>(
         context: context,
@@ -375,6 +485,10 @@ class _CreateTaskScreenState extends State<CreateTaskScreen> {
         isImportant: _important,
         estimatedMinutes: _estimatedMinutes,
         notes: _notesController.text.trim(),
+        customCategoryLabel: _category == TaskCategory.custom
+            ? _customCategoryController.text.trim()
+            : null,
+        taskReminderOffsetMinutes: taskReminderOffsetMinutes,
       );
       final initial = widget.initialTask;
       final saved = initial == null
@@ -384,9 +498,14 @@ class _CreateTaskScreenState extends State<CreateTaskScreen> {
                 title: draft.title,
                 dueAt: draft.dueAt,
                 category: draft.category,
+                customCategoryLabel: draft.customCategoryLabel,
+                clearCustomCategoryLabel: draft.category != TaskCategory.custom,
                 isImportant: draft.isImportant,
                 estimatedMinutes: draft.estimatedMinutes,
                 notes: draft.notes,
+                taskReminderOffsetMinutes: draft.taskReminderOffsetMinutes,
+                clearTaskReminderOffset:
+                    draft.taskReminderOffsetMinutes == null,
               ),
             );
       if (!mounted) return;

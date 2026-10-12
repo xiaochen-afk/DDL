@@ -153,6 +153,10 @@ class SqliteTaskRepository implements TaskRepository {
         createdAt: now,
         updatedAt: now,
         notes: draft.notes,
+        customCategoryLabel: draft.category == TaskCategory.custom
+            ? draft.customCategoryLabel!.trim()
+            : null,
+        taskReminderOffsetMinutes: draft.taskReminderOffsetMinutes,
       );
 
       await db.transaction((transaction) async {
@@ -192,6 +196,10 @@ class SqliteTaskRepository implements TaskRepository {
 
         final updated = task.copyWith(
           title: task.title.trim(),
+          customCategoryLabel: task.category == TaskCategory.custom
+              ? task.customCategoryLabel!.trim()
+              : null,
+          clearCustomCategoryLabel: task.category != TaskCategory.custom,
           updatedAt: _clock.now(),
           version: task.version + 1,
         );
@@ -388,6 +396,8 @@ class SqliteTaskRepository implements TaskRepository {
       'id': task.id,
       'title': task.title,
       'category_id': task.category.name,
+      'custom_category_label': task.customCategoryLabel,
+      'task_reminder_offset_minutes': task.taskReminderOffsetMinutes,
       'important': task.isImportant ? 1 : 0,
       'due_at': _toUtcMilliseconds(task.dueAt),
       'estimated_minutes': task.estimatedMinutes,
@@ -415,6 +425,8 @@ class SqliteTaskRepository implements TaskRepository {
       title: row['title']! as String,
       dueAt: _dateTimeFromRow(row['due_at']),
       category: _categoryFromDatabase(row['category_id']! as String),
+      customCategoryLabel: row['custom_category_label'] as String?,
+      taskReminderOffsetMinutes: row['task_reminder_offset_minutes'] as int?,
       isImportant: row['important'] == 1,
       estimatedMinutes: row['estimated_minutes']! as int,
       status: _statusFromDatabase(row['status']! as String),
@@ -508,7 +520,10 @@ class SqliteTaskRepository implements TaskRepository {
     if (titleLength < 1 ||
         titleLength > taskTitleMaxLength ||
         draft.estimatedMinutes <= 0 ||
-        draft.notes.length > taskNotesMaxLength) {
+        draft.notes.length > taskNotesMaxLength ||
+        !_hasValidCustomCategory(draft) ||
+        (draft.taskReminderOffsetMinutes != null &&
+            draft.taskReminderOffsetMinutes! <= 0)) {
       throw const AppFailure(
         code: 'VALIDATION_FAILED',
         message: 'Task fields are invalid.',
@@ -525,8 +540,18 @@ class SqliteTaskRepository implements TaskRepository {
         isImportant: task.isImportant,
         estimatedMinutes: task.estimatedMinutes,
         notes: task.notes,
+        customCategoryLabel: task.customCategoryLabel,
+        taskReminderOffsetMinutes: task.taskReminderOffsetMinutes,
       ),
     );
+  }
+
+  static bool _hasValidCustomCategory(TaskDraft draft) {
+    final label = draft.customCategoryLabel?.trim() ?? '';
+    if (draft.category == TaskCategory.custom) {
+      return label.isNotEmpty && label.length <= taskCustomCategoryMaxLength;
+    }
+    return label.isEmpty;
   }
 
   static Future<T> _guard<T>(Future<T> Function() operation) async {

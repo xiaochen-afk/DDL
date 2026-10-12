@@ -3,19 +3,69 @@ import 'package:ddl_survival/src/domain/reminder_planner.dart';
 import 'package:ddl_survival/src/domain/task.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-TaskItem _task(DateTime due, {bool important = false, int minutes = 60}) =>
-    TaskItem(
-      id: 'task-1',
-      title: 'DDL',
-      dueAt: due,
-      category: TaskCategory.study,
-      isImportant: important,
-      estimatedMinutes: minutes,
-      status: TaskStatus.active,
-      createdAt: due.subtract(const Duration(days: 3)),
-    );
+TaskItem _task(
+  DateTime due, {
+  bool important = false,
+  int minutes = 60,
+  int? taskReminderOffsetMinutes,
+}) => TaskItem(
+  id: 'task-1',
+  title: 'DDL',
+  dueAt: due,
+  category: TaskCategory.study,
+  isImportant: important,
+  estimatedMinutes: minutes,
+  taskReminderOffsetMinutes: taskReminderOffsetMinutes,
+  status: TaskStatus.active,
+  createdAt: due.subtract(const Duration(days: 3)),
+);
 
 void main() {
+  test('offers task reminder only after every global default point passes', () {
+    final due = DateTime(2026, 10, 6, 18);
+    expect(
+      ReminderPlanner.needsTaskReminder(due, [
+        180,
+        1440,
+      ], DateTime(2026, 10, 6, 14, 59)),
+      false,
+    );
+    expect(
+      ReminderPlanner.needsTaskReminder(due, [
+        180,
+        1440,
+      ], DateTime(2026, 10, 6, 15, 1)),
+      true,
+    );
+    expect(ReminderPlanner.needsTaskReminder(due, [180], due), false);
+  });
+
+  test('task-specific offset replaces only global default reminders', () {
+    final due = DateTime(2026, 10, 6, 18);
+    final task = _task(due, taskReminderOffsetMinutes: 5);
+    const preferences = AppPreferences(
+      defaultReminderOffsetsMinutes: [180, 1440],
+    );
+    final now = DateTime(2026, 10, 6, 16);
+    final plans = ReminderPlanner.plan(task, preferences, now, [task]);
+    expect(plans.map((plan) => plan.scheduledAt), [
+      DateTime(2026, 10, 6, 17, 55),
+    ]);
+    expect(preferences.defaultReminderOffsetsMinutes, [180, 1440]);
+  });
+
+  test('task-specific point in the past is not falsely scheduled', () {
+    final due = DateTime(2026, 10, 6, 18);
+    final task = _task(due, taskReminderOffsetMinutes: 5);
+    final plans = ReminderPlanner.plan(
+      task,
+      const AppPreferences(),
+      DateTime(2026, 10, 6, 17, 58),
+      [task],
+    );
+    expect(plans, isEmpty);
+  });
+
   test(
     'default reminders target exact minutes and move out of quiet hours',
     () {

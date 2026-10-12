@@ -1,8 +1,8 @@
 # DDL 生存指南接口文档
 
-> 文档版本：1.3
+> 文档版本：1.4
 > 更新时间：2026-10-05
-> 当前实现阶段：SQLite 提醒计划与 Android/iOS 本地通知适配（待真机验收）
+> 当前实现阶段：SQLite v4 单任务提醒字段与 Android/iOS 本地通知适配（待完整真机验收）
 > 适用平台：Android、iOS
 
 ## 1. 文档范围
@@ -85,7 +85,9 @@ flowchart LR
 - `id: String`：稳定任务标识。
 - `title: String`：1 至 80 个字符。
 - `dueAt: DateTime`：截止时间，用户输入精确到分钟。
-- `category: TaskCategory`：`study`、`work`、`life`、`fun`。
+- `category: TaskCategory`：`study`、`work`、`life`、`fun`、`custom`。
+- `customCategoryLabel: String?`：仅当 `category == custom` 时使用，去除首尾空白后必填，最多 12 个字符；其他分类必须为空。
+- `taskReminderOffsetMinutes: int?`：可空；非空时只覆盖该任务的全局默认提前提醒列表，必须为正整数。短截止任务表单留空时保存有效值 5；旧任务迁移后为 `null`，继续使用全局默认设置。
 - `isImportant: bool`：用户设置的重要度。
 - `estimatedMinutes: int`：预计耗时，必须大于 0。
 - `status: TaskStatus`：任务状态。
@@ -142,7 +144,7 @@ abstract interface class TaskRepository {
 
 ### 5.3 `createTask`
 
-- 验证标题、预计耗时和截止时间格式。
+- 验证标题、预计耗时、截止时间格式与自定义分类标签。
 - 使用事务同时写入任务和 `task_events` 创建事件。
 - 数据库提交后，由 Use Case 调用 `NotificationPort` 更新提醒。
 - 重复点击由页面提交锁与 Use Case 幂等键共同防护。
@@ -227,6 +229,7 @@ iOS Adapter：
 ## 6.2 提醒计划协调（2026-10-04 批次）
 
 - `ReminderPlanner.plan(task, preferences, now, allTasks, missedRate)` 只处理进行中且未到期、通知偏好开启的任务。默认按截止前 1440/180 分钟生成目标；预计耗时超过 180 分钟时额外生成“预计耗时 + 缓冲分钟”的提前目标；在偏好定义的紧急阈值（默认截止前一小时）的投影风险为“极高”时增加紧急目标。用户修改默认提前量后使用其保存的分钟列表。
+- 创建或编辑时，若所有全局默认提前点均早于当前时间，表单显示单任务提醒选择；未填写时把 5 分钟保存为该任务有效提前量，填写时保存所选正整数。该字段仅替换该任务的默认提前列表，不修改偏好，也不移除风险/最晚开始额外提醒。已过的提醒点不入计划，页面需明确提示。
 - 候选时间按设备本地分钟处理；落在免打扰时段时顺延至该时段结束，若顺延后不早于截止时间则舍弃；过去目标舍弃，同一分钟去重并优先保留紧急渠道。相同任务版本、目标分钟和渠道生成稳定业务 ID。
 - `ReminderCoordinator.reconcile(tasks, preferences, now, missedRates)` 对当前任务投影执行增量对账。创建/编辑/结案/归档/删除、偏好变更、冷启动、恢复前台及前台定时复核均会触发；终态或关闭通知时取消未完成计划。SQLite 记录保留历史状态，数据库重开后重复对账不产生新行。
 - 协调异常不阻断任务页面；`AppController.reminderSyncErrorCode` 在设置页提示稳定错误码，下次启动、恢复前台或任务变更时重试。已存在的 `SCHEDULE_FAILED` 记录不会被无差异对账覆盖，平台 Adapter 可重试。
@@ -316,7 +319,7 @@ Android/iOS 生产环境已注入 SQLite `PreferenceRepository`、`ProfileReposi
 
 - `InMemoryTaskRepository`：已实现，默认数据为空，供页面交互和 Widget 测试使用。
 - `SqliteTaskRepository`：已实现，覆盖任务 CRUD、乐观版本校验、状态流转、事务事件和稳定错误码。
-- `AppDatabase`：已实现数据库 v1 建库、默认分类、索引、外键和前向迁移入口。
+- `AppDatabase`：已实现 SQLite v4 建库、默认分类、索引、外键和 v1/v2/v3 前向迁移；v3 新增可空的自定义分类标签，v4 新增可空的单任务提醒提前分钟数。旧任务升级后两字段保留或为 `NULL`。
 - `SharedPreferencesInstallationStore`：已实现，持久保存首次启动日期。
 - `InMemoryInstallationStore`：已实现，供单元测试和 Widget 测试使用。
 - `NotificationPort`：契约及 Android/iOS 共用插件 Adapter 已实现，真机送达与系统限制仍待验收。

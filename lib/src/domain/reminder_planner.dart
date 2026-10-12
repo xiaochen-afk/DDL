@@ -6,6 +6,17 @@ import 'task.dart';
 class ReminderPlanner {
   const ReminderPlanner._();
 
+  static bool needsTaskReminder(
+    DateTime dueAt,
+    List<int> defaultOffsetsMinutes,
+    DateTime now,
+  ) {
+    if (!dueAt.isAfter(now) || defaultOffsetsMinutes.isEmpty) return false;
+    return defaultOffsetsMinutes.every(
+      (offset) => dueAt.subtract(Duration(minutes: offset)).isBefore(now),
+    );
+  }
+
   static List<ReminderRecord> plan(
     TaskItem task,
     AppPreferences preferences,
@@ -20,8 +31,11 @@ class ReminderPlanner {
     final current = now.toLocal();
     if (!due.isAfter(current)) return const [];
 
+    final defaultOffsets = task.taskReminderOffsetMinutes == null
+        ? preferences.defaultReminderOffsetsMinutes
+        : [task.taskReminderOffsetMinutes!];
     final candidates = <(DateTime, ReminderChannel)>[
-      for (final offset in preferences.defaultReminderOffsetsMinutes)
+      for (final offset in defaultOffsets)
         (due.subtract(Duration(minutes: offset)), ReminderChannel.normal),
       if (task.estimatedMinutes > 180)
         (

@@ -8,6 +8,8 @@ import 'package:ddl_survival/src/domain/local_data.dart';
 import 'package:ddl_survival/src/domain/ports.dart';
 import 'package:ddl_survival/src/domain/task.dart';
 import 'package:ddl_survival/src/screens/create_task_screen.dart';
+import 'package:ddl_survival/src/screens/profile_screen.dart';
+import 'package:ddl_survival/src/screens/todo_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -100,9 +102,10 @@ void main() {
   });
 
   testWidgets('can navigate and create a task', (tester) async {
+    final repository = InMemoryTaskRepository();
     await tester.pumpWidget(
       DdlSurvivalApp(
-        repository: InMemoryTaskRepository(),
+        repository: repository,
         installationStore: InMemoryInstallationStore(),
       ),
     );
@@ -115,30 +118,66 @@ void main() {
     await tester.tap(find.text('待办'));
     await tester.pumpAndSettle();
     expect(find.text('四象限作战图'), findsOneWidget);
+    expect(find.widgetWithText(FloatingActionButton, '新任务'), findsNothing);
+    final filters = find.byKey(const Key('todo_scope_filters'));
+    final todoScroll = find
+        .descendant(
+          of: find.byType(TodoScreen),
+          matching: find.byType(Scrollable),
+        )
+        .first;
+    await tester.scrollUntilVisible(filters, 160, scrollable: todoScroll);
+    await tester.pumpAndSettle();
+    final gridBottom = tester
+        .getBottomLeft(find.byKey(const Key('todo_quadrant_grid')))
+        .dy;
+    final filtersTop = tester.getTopLeft(filters).dy;
+    expect(filtersTop - gridBottom, closeTo(12, 0.1));
 
+    await tester.scrollUntilVisible(
+      find.text('新增'),
+      -160,
+      scrollable: todoScroll,
+    );
+    await tester.pumpAndSettle();
     await tester.tap(find.text('新增'));
     await tester.pumpAndSettle();
     expect(find.text('签下生死状'), findsWidgets);
+    expect(find.text('今天 23:00'), findsNothing);
+    expect(find.text('明天 18:00'), findsNothing);
+    expect(find.text('三天后'), findsNothing);
 
     await tester.enterText(find.byType(TextFormField).first, '测试新的 DDL');
     await tester.testTextInput.receiveAction(TextInputAction.done);
-    final submit = find.byKey(const Key('create_task_submit'));
+    final createScroll = find
+        .descendant(
+          of: find.byType(CreateTaskScreen),
+          matching: find.byType(Scrollable),
+        )
+        .first;
     await tester.scrollUntilVisible(
-      submit,
-      300,
-      scrollable: find
-          .descendant(
-            of: find.byType(CreateTaskScreen),
-            matching: find.byType(Scrollable),
-          )
-          .first,
+      find.text('自定义'),
+      220,
+      scrollable: createScroll,
     );
+    await tester.tap(find.text('自定义'));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const Key('custom_category_field')),
+      '社团',
+    );
+    final submit = find.byKey(const Key('create_task_submit'));
+    await tester.scrollUntilVisible(submit, 300, scrollable: createScroll);
     await tester.pumpAndSettle();
     expect(submit, findsOneWidget);
     await tester.tap(submit);
     await tester.pumpAndSettle();
 
     expect(find.textContaining('已记录：测试新的 DDL'), findsOneWidget);
+    final saved = (await repository.listTasks()).single;
+    expect(saved.category, TaskCategory.custom);
+    expect(saved.customCategoryLabel, '社团');
+    expect(saved.categoryLabel, '社团');
   });
 
   testWidgets('can resolve an overdue task', (tester) async {
@@ -218,6 +257,111 @@ void main() {
     expect((await repository.getTask(original.id))!.notes, '原备注');
     expect((await repository.getTask(original.id))!.version, 2);
   });
+
+  testWidgets('short-deadline edit offers a task-only five-minute reminder', (
+    tester,
+  ) async {
+    final repository = InMemoryTaskRepository();
+    final original = await repository.createTask(
+      TaskDraft(
+        title: '短截止任务',
+        dueAt: DateTime.now().add(const Duration(minutes: 90)),
+        category: TaskCategory.study,
+        isImportant: false,
+        estimatedMinutes: 30,
+      ),
+    );
+    final preferences = InMemoryPreferenceRepository();
+    await tester.pumpWidget(
+      DdlSurvivalApp(
+        repository: repository,
+        installationStore: InMemoryInstallationStore(),
+        preferenceRepository: preferences,
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('短截止任务').first);
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('编辑任务'));
+    await tester.tap(find.text('编辑任务'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('本任务提醒时间'), findsOneWidget);
+    expect(find.text('未单独设置：默认截止前 5 分钟'), findsOneWidget);
+    final formScroll = find
+        .descendant(
+          of: find.byType(CreateTaskScreen),
+          matching: find.byType(Scrollable),
+        )
+        .first;
+    final submit = find.byKey(const Key('edit_task_submit'));
+    await tester.scrollUntilVisible(submit, 300, scrollable: formScroll);
+    await tester.tap(submit);
+    await tester.pumpAndSettle();
+
+    expect(
+      (await repository.getTask(original.id))!.taskReminderOffsetMinutes,
+      5,
+    );
+    expect((await preferences.getOrCreate()).defaultReminderOffsetsMinutes, [
+      1440,
+      180,
+    ]);
+  });
+
+  testWidgets(
+    'short-deadline creation saves fallback without changing defaults',
+    (tester) async {
+      final repository = InMemoryTaskRepository();
+      final preferences = InMemoryPreferenceRepository();
+      await preferences.save(
+        const AppPreferences(defaultReminderOffsetsMinutes: [2880]),
+      );
+      await tester.pumpWidget(
+        DdlSurvivalApp(
+          repository: repository,
+          installationStore: InMemoryInstallationStore(),
+          preferenceRepository: preferences,
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('待办'));
+      await tester.pumpAndSettle();
+      final todoScroll = find
+          .descendant(
+            of: find.byType(TodoScreen),
+            matching: find.byType(Scrollable),
+          )
+          .first;
+      await tester.scrollUntilVisible(
+        find.text('新增'),
+        -160,
+        scrollable: todoScroll,
+      );
+      await tester.tap(find.text('新增'));
+      await tester.pumpAndSettle();
+      expect(find.text('本任务提醒时间'), findsOneWidget);
+      await tester.enterText(find.byType(TextFormField).first, '创建短截止任务');
+      final formScroll = find
+          .descendant(
+            of: find.byType(CreateTaskScreen),
+            matching: find.byType(Scrollable),
+          )
+          .first;
+      final submit = find.byKey(const Key('create_task_submit'));
+      await tester.scrollUntilVisible(submit, 300, scrollable: formScroll);
+      await tester.tap(submit);
+      await tester.pumpAndSettle();
+
+      expect(
+        (await repository.listTasks()).single.taskReminderOffsetMinutes,
+        5,
+      );
+      expect((await preferences.getOrCreate()).defaultReminderOffsetsMinutes, [
+        2880,
+      ]);
+    },
+  );
 
   testWidgets('missed confirmation can be cancelled, then closes the task', (
     tester,
@@ -368,5 +512,60 @@ void main() {
       tester.widget<SwitchListTile>(find.byType(SwitchListTile)).value,
       isFalse,
     );
+  });
+
+  testWidgets('default reminder settings use hour and minute wheels', (
+    tester,
+  ) async {
+    final preferences = InMemoryPreferenceRepository();
+    await tester.pumpWidget(
+      DdlSurvivalApp(
+        repository: InMemoryTaskRepository(),
+        installationStore: InMemoryInstallationStore(),
+        preferenceRepository: preferences,
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('我的'));
+    await tester.pumpAndSettle();
+
+    final profileScroll = find
+        .descendant(
+          of: find.byType(ProfileScreen),
+          matching: find.byType(Scrollable),
+        )
+        .first;
+    await tester.scrollUntilVisible(
+      find.text('默认提前提醒'),
+      180,
+      scrollable: profileScroll,
+    );
+    await tester.drag(profileScroll, const Offset(0, -120));
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.ancestor(of: find.text('默认提前提醒'), matching: find.byType(ListTile)),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('reminder-duration-dialog')), findsOneWidget);
+    expect(find.byType(ListWheelScrollView), findsNWidgets(2));
+    expect(find.textContaining('逗号'), findsNothing);
+    expect(find.text('小时'), findsOneWidget);
+    expect(find.text('分钟'), findsOneWidget);
+
+    final secondWheel = tester.widget<ListWheelScrollView>(
+      find.byType(ListWheelScrollView).at(1),
+    );
+    final secondController =
+        secondWheel.controller! as FixedExtentScrollController;
+    secondController.jumpToItem(secondController.selectedItem + 1);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('保存'));
+    await tester.pumpAndSettle();
+
+    expect((await preferences.getOrCreate()).defaultReminderOffsetsMinutes, [
+      1441,
+    ]);
+    expect(find.text('24 小时 1 分钟前'), findsOneWidget);
   });
 }

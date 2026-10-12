@@ -1,7 +1,8 @@
 const int taskTitleMaxLength = 80;
 const int taskNotesMaxLength = 1000;
+const int taskCustomCategoryMaxLength = 12;
 
-enum TaskCategory { study, work, life, fun }
+enum TaskCategory { study, work, life, fun, custom }
 
 extension TaskCategoryLabel on TaskCategory {
   String get label => switch (this) {
@@ -9,6 +10,7 @@ extension TaskCategoryLabel on TaskCategory {
     TaskCategory.work => '工作',
     TaskCategory.life => '生活',
     TaskCategory.fun => '娱乐',
+    TaskCategory.custom => '自定义',
   };
 }
 
@@ -47,6 +49,8 @@ class TaskDraft {
     required this.isImportant,
     required this.estimatedMinutes,
     this.notes = '',
+    this.customCategoryLabel,
+    this.taskReminderOffsetMinutes,
   });
 
   final String title;
@@ -55,6 +59,8 @@ class TaskDraft {
   final bool isImportant;
   final int estimatedMinutes;
   final String notes;
+  final String? customCategoryLabel;
+  final int? taskReminderOffsetMinutes;
 }
 
 class TaskItem {
@@ -70,6 +76,8 @@ class TaskItem {
     DateTime? updatedAt,
     this.version = 1,
     this.notes = '',
+    this.customCategoryLabel,
+    this.taskReminderOffsetMinutes,
     this.completedAt,
   }) : updatedAt = updatedAt ?? createdAt;
 
@@ -84,7 +92,19 @@ class TaskItem {
   final DateTime updatedAt;
   final int version;
   final String notes;
+  final String? customCategoryLabel;
+  final int? taskReminderOffsetMinutes;
   final DateTime? completedAt;
+
+  String get categoryLabel {
+    final customLabel = customCategoryLabel?.trim();
+    if (category == TaskCategory.custom &&
+        customLabel != null &&
+        customLabel.isNotEmpty) {
+      return customLabel;
+    }
+    return category.label;
+  }
 
   bool get isDone =>
       status == TaskStatus.completed || status == TaskStatus.completedLate;
@@ -115,6 +135,10 @@ class TaskItem {
     int? estimatedMinutes,
     TaskStatus? status,
     String? notes,
+    String? customCategoryLabel,
+    bool clearCustomCategoryLabel = false,
+    int? taskReminderOffsetMinutes,
+    bool clearTaskReminderOffset = false,
     DateTime? completedAt,
     DateTime? updatedAt,
     int? version,
@@ -131,6 +155,12 @@ class TaskItem {
       updatedAt: updatedAt ?? this.updatedAt,
       version: version ?? this.version,
       notes: notes ?? this.notes,
+      customCategoryLabel: clearCustomCategoryLabel
+          ? null
+          : customCategoryLabel ?? this.customCategoryLabel,
+      taskReminderOffsetMinutes: clearTaskReminderOffset
+          ? null
+          : taskReminderOffsetMinutes ?? this.taskReminderOffsetMinutes,
       completedAt: completedAt ?? this.completedAt,
     );
   }

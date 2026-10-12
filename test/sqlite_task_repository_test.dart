@@ -39,7 +39,7 @@ void main() {
     await database.close();
   });
 
-  test('creates v2 schema, indexes, and system categories', () async {
+  test('creates v4 schema, indexes, and system categories', () async {
     final db = await database.database;
     final tableRows = await db.rawQuery(
       "SELECT name FROM sqlite_master WHERE type = 'table'",
@@ -58,7 +58,7 @@ void main() {
         'app_meta',
       ]),
     );
-    expect(await db.getVersion(), 2);
+    expect(await db.getVersion(), 4);
 
     final categories = await db.query(
       'categories',
@@ -70,7 +70,18 @@ void main() {
       'work',
       'life',
       'fun',
+      'custom',
     ]);
+
+    final taskColumns = await db.rawQuery('PRAGMA table_info(tasks)');
+    expect(
+      taskColumns.map((row) => row['name']),
+      contains('custom_category_label'),
+    );
+    expect(
+      taskColumns.map((row) => row['name']),
+      contains('task_reminder_offset_minutes'),
+    );
 
     final indexRows = await db.rawQuery(
       "SELECT name FROM sqlite_master WHERE type = 'index'",
@@ -131,7 +142,7 @@ void main() {
     }
   });
 
-  test('upgrades v1 while preserving tasks, events, and reminders', () async {
+  test('upgrades v1 through v4 while preserving related data', () async {
     final temporaryDirectory = await Directory.systemTemp.createTemp(
       'ddl-survival-migration-test-',
     );
@@ -186,7 +197,7 @@ void main() {
         databasePath: databasePath,
       );
       final upgraded = await upgradedDatabase.database;
-      expect(await upgraded.getVersion(), 2);
+      expect(await upgraded.getVersion(), 4);
       expect(await upgraded.query('tasks'), hasLength(1));
       expect(await upgraded.query('task_events'), hasLength(1));
       expect(await upgraded.query('reminders'), hasLength(1));
@@ -196,7 +207,15 @@ void main() {
         where: 'key = ?',
         whereArgs: ['schema_version'],
       );
-      expect(meta.single['value'], '2');
+      expect(meta.single['value'], '4');
+      expect(
+        (await upgraded.query(
+          'categories',
+          where: 'id = ?',
+          whereArgs: ['custom'],
+        )),
+        hasLength(1),
+      );
 
       await upgraded.update(
         'tasks',
@@ -207,6 +226,8 @@ void main() {
       final task = (await upgraded.query('tasks')).single;
       expect(task['title'], 't' * 80);
       expect(task['notes'], 'n' * 1000);
+      expect(task['custom_category_label'], isNull);
+      expect(task['task_reminder_offset_minutes'], isNull);
     } finally {
       await oldDatabase.close();
       await upgradedDatabase?.close();
@@ -214,6 +235,225 @@ void main() {
         await temporaryDirectory.delete(recursive: true);
       }
     }
+  });
+
+  test('upgrades the previous v2 schema to the reserved v3 field', () async {
+    final temporaryDirectory = await Directory.systemTemp.createTemp(
+      'ddl-survival-v2-migration-test-',
+    );
+    final databasePath = path.join(temporaryDirectory.path, 'migration.db');
+    final oldDatabase = await databaseFactoryFfi.openDatabase(
+      databasePath,
+      options: OpenDatabaseOptions(
+        version: 2,
+        onConfigure: (db) => db.execute('PRAGMA foreign_keys = ON'),
+        onCreate: (db, version) => createSchemaV2(db),
+      ),
+    );
+    AppDatabase? upgradedDatabase;
+
+    try {
+      const taskId = 'v2-task';
+      final timestamp = DateTime.utc(2026, 10, 5).millisecondsSinceEpoch;
+      await oldDatabase.insert('tasks', {
+        'id': taskId,
+        'title': '升级前任务',
+        'category_id': 'study',
+        'important': 1,
+        'due_at': timestamp + const Duration(days: 2).inMilliseconds,
+        'estimated_minutes': 60,
+        'notes': '',
+        'status': 'PENDING',
+        'risk_config_version': 2,
+        'version': 1,
+        'created_at': timestamp,
+        'updated_at': timestamp,
+      });
+      await oldDatabase.close();
+
+      upgradedDatabase = AppDatabase(
+        factory: databaseFactoryFfi,
+        databasePath: databasePath,
+      );
+      final upgraded = await upgradedDatabase.database;
+
+      expect(await upgraded.getVersion(), 4);
+      final task = (await upgraded.query(
+        'tasks',
+        where: 'id = ?',
+        whereArgs: [taskId],
+      )).single;
+      expect(task['title'], '升级前任务');
+      expect(task['custom_category_label'], isNull);
+      expect(task['task_reminder_offset_minutes'], isNull);
+      expect(
+        (await upgraded.query(
+          'categories',
+          where: 'id = ?',
+          whereArgs: ['custom'],
+        )),
+        hasLength(1),
+      );
+      expect(await upgraded.rawQuery('PRAGMA foreign_key_check'), isEmpty);
+    } finally {
+      await oldDatabase.close();
+      await upgradedDatabase?.close();
+      if (temporaryDirectory.existsSync()) {
+        await temporaryDirectory.delete(recursive: true);
+      }
+    }
+  });
+
+  test(
+    'upgrades v3 to v4 without changing existing task or reminders',
+    () async {
+      final temporaryDirectory = await Directory.systemTemp.createTemp(
+        'ddl-survival-v3-migration-test-',
+      );
+      final databasePath = path.join(temporaryDirectory.path, 'migration.db');
+      final oldDatabase = await databaseFactoryFfi.openDatabase(
+        databasePath,
+        options: OpenDatabaseOptions(
+          version: 3,
+          onConfigure: (db) => db.execute('PRAGMA foreign_keys = ON'),
+          onCreate: (db, version) => createSchemaV3(db),
+        ),
+      );
+      AppDatabase? upgradedDatabase;
+
+      try {
+        final timestamp = DateTime.utc(2026, 10, 6).millisecondsSinceEpoch;
+        await oldDatabase.insert('tasks', {
+          'id': 'v3-task',
+          'title': '升级前任务',
+          'category_id': 'study',
+          'important': 1,
+          'due_at': timestamp + const Duration(days: 2).inMilliseconds,
+          'estimated_minutes': 60,
+          'notes': '',
+          'status': 'PENDING',
+          'risk_config_version': 2,
+          'version': 1,
+          'created_at': timestamp,
+          'updated_at': timestamp,
+        });
+        await oldDatabase.insert('reminders', {
+          'id': 'v3-reminder',
+          'task_id': 'v3-task',
+          'scheduled_at': timestamp + const Duration(days: 1).inMilliseconds,
+          'channel': 'normal',
+          'status': 'PENDING',
+          'created_at': timestamp,
+          'updated_at': timestamp,
+        });
+        await oldDatabase.close();
+
+        upgradedDatabase = AppDatabase(
+          factory: databaseFactoryFfi,
+          databasePath: databasePath,
+        );
+        final upgraded = await upgradedDatabase.database;
+        expect(await upgraded.getVersion(), 4);
+        final task = (await upgraded.query('tasks')).single;
+        expect(task['title'], '升级前任务');
+        expect(task['task_reminder_offset_minutes'], isNull);
+        expect((await upgraded.query('reminders')).single['id'], 'v3-reminder');
+        expect(await upgraded.rawQuery('PRAGMA foreign_key_check'), isEmpty);
+      } finally {
+        await oldDatabase.close();
+        await upgradedDatabase?.close();
+        if (temporaryDirectory.existsSync()) {
+          await temporaryDirectory.delete(recursive: true);
+        }
+      }
+    },
+  );
+
+  test('persists and edits a task-specific reminder offset', () async {
+    final created = await repository.createTask(
+      TaskDraft(
+        title: '短截止任务',
+        dueAt: DateTime.utc(2026, 9, 18, 10),
+        category: TaskCategory.study,
+        isImportant: true,
+        estimatedMinutes: 30,
+        taskReminderOffsetMinutes: 5,
+      ),
+    );
+    expect(
+      (await repository.getTask(created.id))!.taskReminderOffsetMinutes,
+      5,
+    );
+
+    final edited = await repository.updateTask(
+      created.copyWith(taskReminderOffsetMinutes: 12),
+    );
+    expect(edited.taskReminderOffsetMinutes, 12);
+    expect(
+      (await repository.getTask(created.id))!.taskReminderOffsetMinutes,
+      12,
+    );
+    final row = (await (await database.database).query(
+      'tasks',
+      where: 'id = ?',
+      whereArgs: [created.id],
+    )).single;
+    expect(row['task_reminder_offset_minutes'], 12);
+
+    await repository.updateTask(edited.copyWith(clearTaskReminderOffset: true));
+    expect(
+      (await repository.getTask(created.id))!.taskReminderOffsetMinutes,
+      isNull,
+    );
+  });
+
+  test('rejects non-positive task-specific reminder offsets', () async {
+    expect(
+      () => repository.createTask(
+        TaskDraft(
+          title: '无效提醒',
+          dueAt: clock.value.add(const Duration(hours: 2)),
+          category: TaskCategory.study,
+          isImportant: false,
+          estimatedMinutes: 30,
+          taskReminderOffsetMinutes: 0,
+        ),
+      ),
+      throwsA(
+        isA<AppFailure>().having(
+          (failure) => failure.code,
+          'code',
+          'VALIDATION_FAILED',
+        ),
+      ),
+    );
+  });
+
+  test('persists a custom category label in the reserved v3 field', () async {
+    final created = await repository.createTask(
+      TaskDraft(
+        title: '社团报名',
+        dueAt: DateTime.utc(2026, 9, 20, 9, 30),
+        category: TaskCategory.custom,
+        customCategoryLabel: '  社团  ',
+        isImportant: true,
+        estimatedMinutes: 45,
+      ),
+    );
+
+    expect(created.category, TaskCategory.custom);
+    expect(created.categoryLabel, '社团');
+    final loaded = await repository.getTask(created.id);
+    expect(loaded?.customCategoryLabel, '社团');
+
+    final db = await database.database;
+    final row = (await db.query(
+      'tasks',
+      where: 'id = ?',
+      whereArgs: [created.id],
+    )).single;
+    expect(row['category_id'], 'custom');
+    expect(row['custom_category_label'], '社团');
   });
 
   test('creates task and event atomically, then reads it back', () async {

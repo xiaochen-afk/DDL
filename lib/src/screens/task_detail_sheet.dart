@@ -43,7 +43,7 @@ class TaskDetailSheet extends StatelessWidget {
                 runSpacing: 8,
                 children: [
                   StatusStamp(
-                    label: task.category.label,
+                    label: task.categoryLabel,
                     color: AppColors.inkSoft,
                   ),
                   StatusStamp(label: quadrant.title, color: riskColor(risk)),

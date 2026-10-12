@@ -217,15 +217,6 @@ class _AppShell extends StatelessWidget {
       body: SurvivalBackdrop(
         child: IndexedStack(index: controller.navigationIndex, children: pages),
       ),
-      floatingActionButton:
-          controller.navigationIndex == 1 && controller.filteredTodos.isNotEmpty
-          ? FloatingActionButton.extended(
-              onPressed: () => _openCreate(context),
-              icon: const Icon(Icons.add_rounded),
-              label: const Text('新任务'),
-            )
-          : null,
-      floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
       bottomNavigationBar: NavigationBar(
         selectedIndex: controller.navigationIndex,
         onDestinationSelected: controller.setNavigationIndex,
